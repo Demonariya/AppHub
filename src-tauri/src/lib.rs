@@ -23,15 +23,8 @@ struct WingetStatus {
 struct SourceRow {
     name: String,
     argument: String,
+    #[serde(rename = "type")]
     source_type: String,
-}
-
-#[derive(Serialize)]
-struct CommandResult {
-    success: bool,
-    code: Option<i32>,
-    stdout: String,
-    stderr: String,
 }
 
 fn winget_path() -> Option<PathBuf> {
@@ -80,6 +73,14 @@ async fn run_winget(args: &[&str]) -> Result<CommandResult, String> {
         stdout: out,
         stderr: err,
     })
+}
+
+#[derive(Serialize)]
+struct CommandResult {
+    success: bool,
+    code: Option<i32>,
+    stdout: String,
+    stderr: String,
 }
 
 fn parse_table(output: &str, has_available: bool) -> Vec<PackageRow> {
@@ -142,12 +143,11 @@ async fn winget_status() -> WingetStatus {
 async fn winget_search(query: String) -> Result<Vec<PackageRow>, String> {
     let q = query.trim();
     if q.len() > 200 { return Err("Search query is too long.".into()); }
-    if q.is_empty() {
-        let result = run_winget(&["search", "--source", "winget"]).await?;
-        if !result.success { return Err(result.stderr); }
-        return Ok(parse_table(&result.stdout, false));
-    }
-    let result = run_winget(&["search", q, "--source", "winget"]).await?;
+    let result = if q.is_empty() {
+        run_winget(&["search", "--source", "winget"]).await?
+    } else {
+        run_winget(&["search", q, "--source", "winget"]).await?
+    };
     if !result.success { return Err(if result.stderr.is_empty() { result.stdout } else { result.stderr }); }
     Ok(parse_table(&result.stdout, false))
 }

@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import {
   AppWindow, ArrowDownToLine, ArrowUpCircle, BookMarked, Boxes, Check,
-  ChevronRight, Command, Compass, Download, ExternalLink, Grid2X2, HardDrive,
+  ChevronRight, Compass, Download, Grid2X2, HardDrive,
   Home, LoaderCircle, Moon, Package, Search, Settings, ShieldCheck, Sun,
   Terminal, Trash2, RefreshCw, AlertCircle
 } from "lucide-react";
