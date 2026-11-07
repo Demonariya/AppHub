@@ -36,7 +36,9 @@ fn winget_path() -> Option<PathBuf> {
 }
 
 async fn run_winget(args: &[&str]) -> Result<CommandResult, String> {
-    let exe = winget_path().ok_or_else(|| "WinGet was not found. Install or update Microsoft App Installer.".to_string())?;
+    let exe = winget_path().ok_or_else(|| {
+        "WinGet was not found. Install or update Microsoft App Installer.".to_string()
+    })?;
     let mut child = Command::new(exe)
         .args(args)
         .arg("--disable-interactivity")
@@ -92,19 +94,34 @@ fn parse_table(output: &str, has_available: bool) -> Vec<PackageRow> {
     let name_at = header.find("Name").unwrap_or(0);
     let id_at = header.find("Id").unwrap_or(name_at + 1);
     let version_at = header.find("Version").unwrap_or(id_at + 1);
-    let available_at = if has_available { header.find("Available").or_else(|| header.find("Available Version")) } else { None };
+    let available_at = if has_available {
+        header
+            .find("Available")
+            .or_else(|| header.find("Available Version"))
+    } else {
+        None
+    };
     let source_at = header.find("Source");
     let mut rows = Vec::new();
 
     for line in lines {
         let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.chars().all(|c| c == '-' || c == ' ') || trimmed.starts_with("The following") {
+        if trimmed.is_empty()
+            || trimmed.chars().all(|c| c == '-' || c == ' ')
+            || trimmed.starts_with("The following")
+        {
             continue;
         }
         let chars: Vec<char> = line.chars().collect();
         let slice = |start: usize, end: Option<usize>| -> String {
-            if start >= chars.len() { return String::new(); }
-            chars[start..end.unwrap_or(chars.len()).min(chars.len())].iter().collect::<String>().trim().to_string()
+            if start >= chars.len() {
+                return String::new();
+            }
+            chars[start..end.unwrap_or(chars.len()).min(chars.len())]
+                .iter()
+                .collect::<String>()
+                .trim()
+                .to_string()
         };
         let name = slice(name_at, Some(id_at));
         let id = slice(id_at, Some(version_at));
@@ -112,7 +129,13 @@ fn parse_table(output: &str, has_available: bool) -> Vec<PackageRow> {
         let available_version = available_at.map(|at| slice(at, source_at));
         let source = source_at.map(|at| slice(at, None));
         if !id.is_empty() && id.contains('.') && !name.is_empty() {
-            rows.push(PackageRow { name, id, version, available_version, source });
+            rows.push(PackageRow {
+                name,
+                id,
+                version,
+                available_version,
+                source,
+            });
         }
     }
     rows
@@ -121,16 +144,31 @@ fn parse_table(output: &str, has_available: bool) -> Vec<PackageRow> {
 fn validate_id(id: &str) -> Result<(), String> {
     let valid = !id.is_empty()
         && id.len() <= 255
-        && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+'));
-    if valid { Ok(()) } else { Err("Invalid package ID. Only letters, numbers, dot, dash, underscore and plus are accepted.".into()) }
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+'));
+    if valid {
+        Ok(())
+    } else {
+        Err(
+            "Invalid package ID. Only letters, numbers, dot, dash, underscore and plus are accepted."
+                .into(),
+        )
+    }
 }
 
 #[tauri::command]
 async fn winget_status() -> WingetStatus {
     let path = winget_path();
     let version = if path.is_some() {
-        run_winget(&["--version"]).await.ok().map(|r| r.stdout.trim().to_string()).filter(|s| !s.is_empty())
-    } else { None };
+        run_winget(&["--version"])
+            .await
+            .ok()
+            .map(|r| r.stdout.trim().to_string())
+            .filter(|s| !s.is_empty())
+    } else {
+        None
+    };
     WingetStatus {
         available: path.is_some(),
         version,
@@ -142,39 +180,72 @@ async fn winget_status() -> WingetStatus {
 #[tauri::command]
 async fn winget_search(query: String) -> Result<Vec<PackageRow>, String> {
     let q = query.trim();
-    if q.len() > 200 { return Err("Search query is too long.".into()); }
+    if q.len() > 200 {
+        return Err("Search query is too long.".into());
+    }
     let result = if q.is_empty() {
         run_winget(&["search", "--source", "winget"]).await?
     } else {
         run_winget(&["search", q, "--source", "winget"]).await?
     };
-    if !result.success { return Err(if result.stderr.is_empty() { result.stdout } else { result.stderr }); }
+    if !result.success {
+        return Err(if result.stderr.is_empty() {
+            result.stdout
+        } else {
+            result.stderr
+        });
+    }
     Ok(parse_table(&result.stdout, false))
 }
 
 #[tauri::command]
 async fn winget_list() -> Result<Vec<PackageRow>, String> {
     let result = run_winget(&["list"]).await?;
-    if !result.success { return Err(if result.stderr.is_empty() { result.stdout } else { result.stderr }); }
+    if !result.success {
+        return Err(if result.stderr.is_empty() {
+            result.stdout
+        } else {
+            result.stderr
+        });
+    }
     Ok(parse_table(&result.stdout, false))
 }
 
 #[tauri::command]
 async fn winget_updates() -> Result<Vec<PackageRow>, String> {
     let result = run_winget(&["upgrade"]).await?;
-    if !result.success { return Err(if result.stderr.is_empty() { result.stdout } else { result.stderr }); }
+    if !result.success {
+        return Err(if result.stderr.is_empty() {
+            result.stdout
+        } else {
+            result.stderr
+        });
+    }
     Ok(parse_table(&result.stdout, true))
 }
 
 #[tauri::command]
 async fn winget_sources() -> Result<Vec<SourceRow>, String> {
     let result = run_winget(&["source", "list"]).await?;
-    if !result.success { return Err(if result.stderr.is_empty() { result.stdout } else { result.stderr }); }
+    if !result.success {
+        return Err(if result.stderr.is_empty() {
+            result.stdout
+        } else {
+            result.stderr
+        });
+    }
     let mut rows = Vec::new();
     for line in result.stdout.lines() {
         let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 3 && !parts[0].eq_ignore_ascii_case("Name") && !parts[0].starts_with('-') {
-            rows.push(SourceRow { name: parts[0].to_string(), argument: parts[1].to_string(), source_type: parts[2..].join(" ") });
+        if parts.len() >= 3
+            && !parts[0].eq_ignore_ascii_case("Name")
+            && !parts[0].starts_with('-')
+        {
+            rows.push(SourceRow {
+                name: parts[0].to_string(),
+                argument: parts[1].to_string(),
+                source_type: parts[2..].join(" "),
+            });
         }
     }
     Ok(rows)
@@ -183,7 +254,17 @@ async fn winget_sources() -> Result<Vec<SourceRow>, String> {
 #[tauri::command]
 async fn winget_install(id: String) -> Result<CommandResult, String> {
     validate_id(&id)?;
-    run_winget(&["install", "--id", &id, "--exact", "--source", "winget", "--accept-package-agreements", "--accept-source-agreements"]).await
+    run_winget(&[
+        "install",
+        "--id",
+        &id,
+        "--exact",
+        "--source",
+        "winget",
+        "--accept-package-agreements",
+        "--accept-source-agreements",
+    ])
+    .await
 }
 
 #[tauri::command]
@@ -195,17 +276,32 @@ async fn winget_uninstall(id: String) -> Result<CommandResult, String> {
 #[tauri::command]
 async fn winget_upgrade(id: String) -> Result<CommandResult, String> {
     validate_id(&id)?;
-    run_winget(&["upgrade", "--id", &id, "--exact", "--accept-package-agreements", "--accept-source-agreements"]).await
+    run_winget(&[
+        "upgrade",
+        "--id",
+        &id,
+        "--exact",
+        "--accept-package-agreements",
+        "--accept-source-agreements",
+    ])
+    .await
 }
 
 #[tauri::command]
 async fn winget_upgrade_all() -> Result<CommandResult, String> {
-    run_winget(&["upgrade", "--all", "--accept-package-agreements", "--accept-source-agreements"]).await
+    run_winget(&[
+        "upgrade",
+        "--all",
+        "--accept-package-agreements",
+        "--accept-source-agreements",
+    ])
+    .await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn validates_package_ids() {
         assert!(validate_id("Microsoft.VisualStudioCode").is_ok());
@@ -213,6 +309,7 @@ mod tests {
         assert!(validate_id("bad id; whoami").is_err());
         assert!(validate_id("").is_err());
     }
+
     #[test]
     fn parses_search_table() {
         let sample = "Name                         Id                         Version\n---------------------------------------------------------------\nVisual Studio Code           Microsoft.VisualStudioCode 1.90.0";
@@ -226,8 +323,15 @@ mod tests {
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
-            winget_status, winget_search, winget_list, winget_updates, winget_sources,
-            winget_install, winget_uninstall, winget_upgrade, winget_upgrade_all
+            winget_status,
+            winget_search,
+            winget_list,
+            winget_updates,
+            winget_sources,
+            winget_install,
+            winget_uninstall,
+            winget_upgrade,
+            winget_upgrade_all
         ])
         .run(tauri::generate_context!())
         .expect("error while running AppHub");
