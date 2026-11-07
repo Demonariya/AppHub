@@ -1,8 +1,14 @@
-use serde::Serialize;
-use std::{path::PathBuf, process::Stdio, time::Duration};
+use serde::{Deserialize, Serialize};
+use std::{
+    fs,
+    path::PathBuf,
+    process::Stdio,
+    time::Duration,
+};
+use tauri::Manager;
 use tokio::{io::AsyncReadExt, process::Command, time::timeout};
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 struct PackageRow {
     name: String,
     id: String,
@@ -33,6 +39,73 @@ fn winget_path() -> Option<PathBuf> {
         let root = PathBuf::from(local).join("Microsoft/WindowsApps/winget.exe");
         root.exists().then_some(root)
     })
+}
+
+fn favorites_file_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let directory = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Could not resolve AppHub data directory: {error}"))?;
+    fs::create_dir_all(&directory)
+        .map_err(|error| format!("Could not create AppHub data directory: {error}"))?;
+    Ok(directory.join("favorites.json"))
+}
+
+fn read_favorites(app: &tauri::AppHandle) -> Result<Vec<PackageRow>, String> {
+    let path = favorites_file_path(app)?;
+    match fs::read_to_string(&path) {
+        Ok(contents) => serde_json::from_str(&contents)
+            .map_err(|error| format!("Could not read AppHub favorites: {error}")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(format!("Could not read AppHub favorites: {error}")),
+    }
+}
+
+fn write_favorites(
+    app: &tauri::AppHandle,
+    favorites: &[PackageRow],
+) -> Result<(), String> {
+    let path = favorites_file_path(app)?;
+    let contents = serde_json::to_string_pretty(favorites)
+        .map_err(|error| format!("Could not encode AppHub favorites: {error}"))?;
+    fs::write(path, contents).map_err(|error| format!("Could not save AppHub favorites: {error}"))
+}
+
+#[tauri::command]
+fn favorites_list(app: tauri::AppHandle) -> Result<Vec<PackageRow>, String> {
+    read_favorites(&app)
+}
+
+#[tauri::command]
+fn favorites_add(
+    app: tauri::AppHandle,
+    package: PackageRow,
+) -> Result<Vec<PackageRow>, String> {
+    validate_id(&package.id)?;
+    let mut favorites = read_favorites(&app)?;
+    if let Some(existing) = favorites
+        .iter_mut()
+        .find(|favorite| favorite.id.eq_ignore_ascii_case(&package.id))
+    {
+        *existing = package;
+    } else {
+        favorites.push(package);
+    }
+    favorites.sort_by_key(|favorite| favorite.name.to_ascii_lowercase());
+    write_favorites(&app, &favorites)?;
+    Ok(favorites)
+}
+
+#[tauri::command]
+fn favorites_remove(
+    app: tauri::AppHandle,
+    id: String,
+) -> Result<Vec<PackageRow>, String> {
+    validate_id(&id)?;
+    let mut favorites = read_favorites(&app)?;
+    favorites.retain(|favorite| !favorite.id.eq_ignore_ascii_case(&id));
+    write_favorites(&app, &favorites)?;
+    Ok(favorites)
 }
 
 async fn run_winget(args: &[&str]) -> Result<CommandResult, String> {
@@ -323,6 +396,9 @@ mod tests {
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
+            favorites_list,
+            favorites_add,
+            favorites_remove,
             winget_status,
             winget_search,
             winget_list,

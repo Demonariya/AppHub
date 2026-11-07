@@ -3,7 +3,7 @@ import {
   AppWindow, ArrowDownToLine, ArrowUpCircle, BookMarked, Boxes, Check,
   ChevronRight, Compass, Download, Grid2X2, HardDrive,
   Home, LoaderCircle, Moon, Package, Search, Settings, ShieldCheck, Sun,
-  Terminal, Trash2, RefreshCw, AlertCircle
+  Terminal, Trash2, RefreshCw, AlertCircle, Bookmark, BookmarkCheck
 } from "lucide-react";
 import { winget } from "./services/winget";
 import type { CommandResult, PackageRow, SourceRow, WingetStatus } from "./types";
@@ -24,6 +24,7 @@ function App() {
   const [installed, setInstalled] = useState<PackageRow[]>([]);
   const [updates, setUpdates] = useState<PackageRow[]>([]);
   const [sources, setSources] = useState<SourceRow[]>([]);
+  const [favorites, setFavorites] = useState<PackageRow[]>([]);
   const [status, setStatus] = useState<WingetStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
@@ -34,8 +35,10 @@ function App() {
   const refresh = async () => {
     setBusy(true);
     try {
-      const [s, i, u, so] = await Promise.all([winget.status(), winget.installed(), winget.updates(), winget.sources()]);
-      setStatus(s); setInstalled(i); setUpdates(u); setSources(so);
+      const [s, i, u, so, f] = await Promise.all([
+        winget.status(), winget.installed(), winget.updates(), winget.sources(), winget.favorites()
+      ]);
+      setStatus(s); setInstalled(i); setUpdates(u); setSources(so); setFavorites(f);
     } catch (e) { setNotice(String(e)); }
     finally { setBusy(false); }
   };
@@ -59,20 +62,34 @@ function App() {
     } catch (e) { setNotice(String(e)); }
     finally { setBusy(false); }
   };
+  const toggleFavorite = async (item: PackageRow) => {
+    try {
+      const saved = favorites.some(favorite => favorite.id.toLowerCase() === item.id.toLowerCase());
+      const next = saved ? await winget.removeFavorite(item.id) : await winget.addFavorite(item);
+      setFavorites(next);
+      setNotice(saved ? "Removed from your library." : "Saved to your library.");
+    } catch (e) { setNotice(String(e)); }
+  };
   const visible = page === "Installed" ? installed : page === "Updates" ? updates : packages;
   const title = page === "Home" ? "Your software, in one place." : page;
   const summary = useMemo(() => ({ installed: installed.length, updates: updates.length, sources: sources.length }), [installed, updates, sources]);
 
-  const packageCard = (p: PackageRow, action: "install" | "uninstall" | "upgrade") => (
-    <article className="package-card" key={p.id}>
-      <div className="app-icon"><AppWindow size={21} /></div>
-      <div className="package-info"><strong>{p.name}</strong><span>{p.id}</span><small>{p.version}{p.available_version ? " → " + p.available_version : ""}</small></div>
-      <button className="icon-button" title={action} disabled={busy} onClick={() => void runAction(action, p)}>
-        {action === "install" ? <ArrowDownToLine size={17}/> : action === "upgrade" ? <ArrowUpCircle size={17}/> : <Trash2 size={17}/>}
-      </button>
-      <button className="text-button" onClick={() => setSelected(p)}>Details <ChevronRight size={14}/></button>
-    </article>
-  );
+  const packageCard = (p: PackageRow, action: "install" | "uninstall" | "upgrade") => {
+    const saved = favorites.some(favorite => favorite.id.toLowerCase() === p.id.toLowerCase());
+    return (
+      <article className="package-card" key={p.id}>
+        <div className="app-icon"><AppWindow size={21} /></div>
+        <div className="package-info"><strong>{p.name}</strong><span>{p.id}</span><small>{p.version}{p.available_version ? " → " + p.available_version : ""}</small></div>
+        <button className="icon-button" title={action} disabled={busy} onClick={() => void runAction(action, p)}>
+          {action === "install" ? <ArrowDownToLine size={17}/> : action === "upgrade" ? <ArrowUpCircle size={17}/> : <Trash2 size={17}/>}
+        </button>
+        <button className="icon-button" title={saved ? "Remove from library" : "Save to library"} onClick={() => void toggleFavorite(p)}>
+          {saved ? <BookmarkCheck size={17}/> : <Bookmark size={17}/>}
+        </button>
+        <button className="text-button" onClick={() => setSelected(p)}>Details <ChevronRight size={14}/></button>
+      </article>
+    );
+  };
 
   return <div className="shell">
     <aside className="sidebar">
@@ -105,6 +122,9 @@ function App() {
             <button className="primary" onClick={() => void runAction(installed.some(x => x.id === selected.id) ? "upgrade" : "install", selected)}>{installed.some(x => x.id === selected.id) ? "Update" : "Install"}</button>
             {installed.some(x => x.id === selected.id) && <button className="secondary" onClick={() => void runAction("uninstall", selected)}>Uninstall</button>}
             <button className="secondary" onClick={() => void navigator.clipboard.writeText(selected.id)}>Copy package ID</button>
+            <button className="secondary" onClick={() => void toggleFavorite(selected)}>
+              {favorites.some(favorite => favorite.id.toLowerCase() === selected.id.toLowerCase()) ? "Remove from Library" : "Save to Library"}
+            </button>
           </div>
         </div> : page === "Home" ? <>
           <div className="hero"><div className="eyebrow"><span className="eyebrow-dot"/> WINDOWS PACKAGE MANAGEMENT</div><h1>{title}</h1><p>Discover, install and maintain software through the trusted WinGet package manager.</p><button className="primary" onClick={() => { setPage("Discover"); void runSearch(""); }}>Explore catalog <ChevronRight size={16}/></button><div className="hero-orbit"><div className="orbit-ring"/><div className="orbit-core"><Package size={38}/></div><div className="orbit-chip chip-one"><Check size={14}/> Verified source</div><div className="orbit-chip chip-two"><ArrowUpCircle size={14}/> Updates</div></div></div>
@@ -113,9 +133,10 @@ function App() {
           {updates.slice(0,4).map(p => packageCard(p,"upgrade"))}
           {updates.length === 0 && <div className="empty"><Check size={22}/><b>You're up to date</b><span>No available updates were reported.</span></div>}
         </> : page === "Settings" ? <><div className="page-heading"><div className="eyebrow">PREFERENCES</div><h1>Settings</h1><p>AppHub appearance and local package manager status.</p></div><div className="settings-row"><div><b>Appearance</b><span>Switch between graphite dark and light themes.</span></div><button className="secondary" onClick={() => setDark(!dark)}>{dark ? "Dark theme" : "Light theme"} · Toggle</button></div><div className="settings-row"><div><b>WinGet status</b><span>{status?.available ? "WinGet " + (status.version || "") + " detected" : "WinGet not detected"}</span></div><button className="secondary" onClick={() => void refresh()}>Check again</button></div></> :
-        page === "Package Sources" ? <><div className="page-heading"><div className="eyebrow">CONFIGURATION</div><h1>Package sources</h1><p>Sources configured in WinGet. Only add sources you trust.</p></div>{sources.map(s => <div className="source-row" key={s.name}><div className="source-icon"><Boxes size={18}/></div><div><b>{s.name}</b><span>{s.argument}</span></div><small>{s.type}</small></div>)}{sources.length === 0 && <div className="empty">No source information available.</div>}</> :
+        page === "Package Sources" ? <><div className="page-heading"><div className="eyebrow">CONFIGURATION</div><h1>Package sources</h1><p>Sources configured in WinGet. Only add sources you trust.</p></div>{sources.map(s => <div className="source-row" key={s.name}><div className="source-icon"><Boxes size={18}/></div><div><b>{s.name}</b><span>{s.argument}</span></div><small>{s.type}</small></div>)}{sources.length === 0 && <div className="empty">No source information available.</div></> :
         page === "Categories" ? <><div className="page-heading"><div className="eyebrow">BROWSE</div><h1>Categories</h1><p>Search WinGet using a category keyword. Classification is not inferred when package metadata is unavailable.</p></div><div className="category-grid">{["Browsers","Development","Gaming","Multimedia","Communication","Security","Productivity","Utilities","System Tools","Compression","Drivers & Hardware"].map(c => <button className="category-card" key={c} onClick={() => { setQuery(c); void runSearch(c); }}><Grid2X2 size={19}/><b>{c}</b><ChevronRight size={15}/></button>)}</div></> :
-        page === "Downloads" || page === "Library" ? <><div className="page-heading"><div className="eyebrow">PERSONAL</div><h1>{page}</h1><p>{page === "Downloads" ? "WinGet does not expose a reliable universal download queue through its CLI output." : "Favorites and collections will be stored locally in a future library module."}</p></div><div className="empty"><Package size={22}/><b>{page === "Downloads" ? "No tracked downloads" : "Your library is ready to grow"}</b><span>{page === "Downloads" ? "Install activity is not presented as download progress." : "Browse packages and manage installed software from here."}</span></div></> :
+        page === "Downloads" ? <><div className="page-heading"><div className="eyebrow">ACTIVITY</div><h1>Downloads</h1><p>WinGet does not expose a reliable universal download queue through its CLI output. AppHub does not invent progress percentages.</p></div><div className="empty"><Download size={22}/><b>No tracked downloads</b><span>Install output is shown after an operation completes.</span></div></> :
+        page === "Library" ? <><div className="page-heading"><div className="eyebrow">PERSONAL COLLECTION</div><h1>Library</h1><p>Packages you save here are stored locally on this device.</p></div>{favorites.map(p => <article className="package-card" key={p.id}><div className="app-icon"><AppWindow size={21}/></div><div className="package-info"><strong>{p.name}</strong><span>{p.id}</span><small>{p.version || "Version not reported"}</small></div><button className="text-button" onClick={() => setSelected(p)}>Details <ChevronRight size={14}/></button><button className="icon-button" title="Remove from library" onClick={() => void toggleFavorite(p)}><BookmarkCheck size={17}/></button></article>)}{favorites.length === 0 && <div className="empty"><BookMarked size={22}/><b>Your library is empty</b><span>Save packages with the bookmark control while browsing.</span></div>}</> :
         <><div className="page-heading"><div className="eyebrow">{page === "Updates" ? "MAINTENANCE" : page === "Installed" ? "ON THIS DEVICE" : "PACKAGE CATALOG"}</div><h1>{page}</h1><p>{page === "Installed" ? "Applications currently reported by WinGet." : page === "Updates" ? "Packages with updates reported by WinGet." : "Search the live WinGet catalog. Results are not bundled with AppHub."}</p></div>
           {page === "Discover" && <div className="filter-line"><button className="secondary" onClick={() => void runSearch()}>Search WinGet <Search size={15}/></button><span>{packages.length} results</span></div>}
           {busy && <div className="loading"><LoaderCircle className="spin" size={18}/> Querying WinGet…</div>}
