@@ -7,6 +7,7 @@ export const winget = {
   installed: () => invoke<PackageRow[]>("winget_list"),
   updates: () => invoke<PackageRow[]>("winget_updates"),
   sources: () => invoke<SourceRow[]>("winget_sources"),
+  show: (id: string) => invoke<CommandResult>("winget_show", { id }),
   favorites: () => invoke<PackageRow[]>("favorites_list"),
   addFavorite: (packageRow: PackageRow) =>
     invoke<PackageRow[]>("favorites_add", { package: packageRow }),

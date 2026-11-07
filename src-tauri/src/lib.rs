@@ -264,6 +264,20 @@ async fn winget_search(query: String) -> Result<Vec<PackageRow>, String> {
 }
 
 #[tauri::command]
+async fn winget_show(id: String) -> Result<CommandResult, String> {
+    validate_id(&id)?;
+    let result = run_winget(&["show", "--id", &id, "--exact", "--source", "winget"]).await?;
+    if !result.success {
+        return Err(if result.stderr.is_empty() {
+            result.stdout
+        } else {
+            result.stderr
+        });
+    }
+    Ok(result)
+}
+
+#[tauri::command]
 async fn winget_list() -> Result<Vec<PackageRow>, String> {
     let result = run_winget(&["list"]).await?;
     if !result.success {
@@ -391,6 +405,7 @@ pub fn run() {
             favorites_remove,
             winget_status,
             winget_search,
+            winget_show,
             winget_list,
             winget_updates,
             winget_sources,
