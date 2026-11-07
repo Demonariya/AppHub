@@ -1,10 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::{
-    fs,
-    path::PathBuf,
-    process::Stdio,
-    time::Duration,
-};
+use std::{fs, path::PathBuf, process::Stdio, time::Duration};
 use tauri::Manager;
 use tokio::{io::AsyncReadExt, process::Command, time::timeout};
 
@@ -61,10 +56,7 @@ fn read_favorites(app: &tauri::AppHandle) -> Result<Vec<PackageRow>, String> {
     }
 }
 
-fn write_favorites(
-    app: &tauri::AppHandle,
-    favorites: &[PackageRow],
-) -> Result<(), String> {
+fn write_favorites(app: &tauri::AppHandle, favorites: &[PackageRow]) -> Result<(), String> {
     let path = favorites_file_path(app)?;
     let contents = serde_json::to_string_pretty(favorites)
         .map_err(|error| format!("Could not encode AppHub favorites: {error}"))?;
@@ -77,10 +69,7 @@ fn favorites_list(app: tauri::AppHandle) -> Result<Vec<PackageRow>, String> {
 }
 
 #[tauri::command]
-fn favorites_add(
-    app: tauri::AppHandle,
-    package: PackageRow,
-) -> Result<Vec<PackageRow>, String> {
+fn favorites_add(app: tauri::AppHandle, package: PackageRow) -> Result<Vec<PackageRow>, String> {
     validate_id(&package.id)?;
     let mut favorites = read_favorites(&app)?;
     if let Some(existing) = favorites
@@ -97,10 +86,7 @@ fn favorites_add(
 }
 
 #[tauri::command]
-fn favorites_remove(
-    app: tauri::AppHandle,
-    id: String,
-) -> Result<Vec<PackageRow>, String> {
+fn favorites_remove(app: tauri::AppHandle, id: String) -> Result<Vec<PackageRow>, String> {
     validate_id(&id)?;
     let mut favorites = read_favorites(&app)?;
     favorites.retain(|favorite| !favorite.id.eq_ignore_ascii_case(&id));
