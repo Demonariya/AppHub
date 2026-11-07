@@ -1,0 +1,6 @@
+{
+  "name": "AppHub — Premium Windows Package Store",
+  "description": "Production-ready Windows software store powered by Microsoft WinGet, with a minimalist dark graphite interface, package discovery, live installer queue, update center, and repository management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

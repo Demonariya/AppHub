@@ -1,0 +1,68 @@
+name: Release Build
+
+on:
+  push:
+    tags:
+      - 'v*'
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test-and-build:
+    name: Build & Release AppHub (Windows x64)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js Environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Rust Stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install Frontend Dependencies
+        run: npm ci
+
+      - name: Run Type Checking & Linting
+        run: npm run lint
+
+      - name: Run Rust Automated Tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --verbose
+
+      - name: Build Frontend Assets
+        run: npm run build
+
+      - name: Build Tauri Desktop Installers (NSIS & MSI)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: 'AppHub v__VERSION__'
+          releaseBody: 'Production release of AppHub Windows Package Store. See CHANGELOG.md for detailed release notes.'
+          releaseDraft: false
+          prerelease: false
+          args: --target x86_64-pc-windows-msvc
+
+      - name: Upload Installer Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: AppHub-Windows-x64-Installers
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi

@@ -1,0 +1,32 @@
+[package]
+name = "apphub"
+version = "0.1.0"
+description = "AppHub - Premium Windows Package Store powered by Microsoft WinGet"
+authors = ["AppHub Contributors"]
+license = "Apache-2.0"
+edition = "2021"
+
+[lib]
+name = "apphub_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.0.0", features = [] }
+
+[dependencies]
+tauri = { version = "2.0.0", features = ["tray-icon"] }
+tauri-plugin-shell = "2.0.0"
+tauri-plugin-notification = "2.0.0"
+tauri-plugin-process = "2.0.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.38", features = ["full"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+thiserror = "1.0"
+regex = "1.10"
+log = "0.4"
+env_logger = "0.11"
+chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+tempfile = "3.10"
