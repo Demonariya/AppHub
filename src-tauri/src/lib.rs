@@ -123,8 +123,14 @@ async fn run_winget(args: &[&str]) -> Result<CommandResult, String> {
         .spawn()
         .map_err(|e| format!("Failed to start WinGet: {e}"))?;
 
-    let mut stdout = child.stdout.take().ok_or("Could not capture WinGet stdout")?;
-    let mut stderr = child.stderr.take().ok_or("Could not capture WinGet stderr")?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or("Could not capture WinGet stdout")?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or("Could not capture WinGet stderr")?;
     let out_task = tokio::spawn(async move {
         let mut data = Vec::new();
         let _ = stdout.read_to_end(&mut data).await;
@@ -310,9 +316,7 @@ async fn winget_sources() -> Result<Vec<SourceRow>, String> {
     let mut rows = Vec::new();
     for line in result.stdout.lines() {
         let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 3
-            && !parts[0].eq_ignore_ascii_case("Name")
-            && !parts[0].starts_with('-')
+        if parts.len() >= 3 && !parts[0].eq_ignore_ascii_case("Name") && !parts[0].starts_with('-')
         {
             rows.push(SourceRow {
                 name: parts[0].to_string(),
