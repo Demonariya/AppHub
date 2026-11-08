@@ -128,3 +128,26 @@ pub async fn winget_source_add(
 pub async fn winget_source_remove(name: String) -> Result<CommandOutputPayload, AppHubError> {
     WinGetExecutor::execute(&["source", "remove", &name]).await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_check_winget_environment_command() {
+        let res = check_winget_environment().await;
+        assert!(res.is_ok());
+        let info = res.unwrap();
+        assert!(!info.version.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_invalid_package_id_rejection() {
+        let invalid_ids = vec!["", "invalid id with spaces", "malicious; rm -rf /"];
+        for id in invalid_ids {
+            let res = winget_show(id.to_string()).await;
+            assert!(res.is_err());
+        }
+    }
+}
+

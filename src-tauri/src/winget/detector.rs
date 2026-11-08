@@ -1,6 +1,8 @@
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::Command;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WinGetInfo {
     pub is_installed: bool,
     pub path: PathBuf,
@@ -45,5 +47,34 @@ pub fn detect_winget() -> WinGetInfo {
             version: "Not Detected".to_string(),
             app_installer_available: false,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_winget_info_serialization() {
+        let info = WinGetInfo {
+            is_installed: true,
+            path: PathBuf::from("C:\\Windows\\System32\\winget.exe"),
+            version: "v1.9.25200".to_string(),
+            app_installer_available: true,
+        };
+        let serialized = serde_json::to_string(&info).expect("Should serialize WinGetInfo");
+        assert!(serialized.contains("v1.9.25200"));
+        assert!(serialized.contains("is_installed"));
+
+        let deserialized: WinGetInfo = serde_json::from_str(&serialized).expect("Should deserialize");
+        assert_eq!(deserialized.version, "v1.9.25200");
+        assert!(deserialized.is_installed);
+    }
+
+    #[test]
+    fn test_detect_winget_does_not_panic() {
+        let info = detect_winget();
+        // Regardless of whether WinGet is in the test environment or not, detect_winget should complete safely
+        assert!(!info.version.is_empty());
     }
 }
