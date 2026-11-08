@@ -104,7 +104,14 @@ class WinGetEngineService {
    * Format command array into standard PowerShell/CMD preview
    */
   public formatCliPreview(args: string[]): string {
-    return `winget ${args.map(a => (a.includes(' ') ? `"${a}"` : a)).join(' ')}`;
+    return `winget ${args
+      .map((a, idx) => {
+        if (a.includes(' ') || (idx > 0 && args[idx - 1] === '--location')) {
+          return `"${a}"`;
+        }
+        return a;
+      })
+      .join(' ')}`;
   }
 
   /**

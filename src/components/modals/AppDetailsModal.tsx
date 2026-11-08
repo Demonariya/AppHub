@@ -192,7 +192,7 @@ export const AppDetailsModal: React.FC<AppDetailsModalProps> = ({
               ) : pkg.isInstalled ? (
                 <div className="flex items-center gap-2 w-full sm:w-auto">
                   <button
-                    onClick={() => onActionClick(pkg, 'reinstall', { silent: silentMode })}
+                    onClick={() => onActionClick(pkg, 'reinstall', { silent: silentMode, customLocation: effectiveCustomLocation })}
                     disabled={isActionActive}
                     className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-neutral-300 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg transition-colors"
                   >
@@ -210,7 +210,7 @@ export const AppDetailsModal: React.FC<AppDetailsModalProps> = ({
                 </div>
               ) : (
                 <button
-                  onClick={() => onActionClick(pkg, 'install', { silent: silentMode })}
+                  onClick={() => onActionClick(pkg, 'install', { silent: silentMode, customLocation: effectiveCustomLocation })}
                   disabled={isActionActive}
                   className="flex-1 sm:flex-initial flex items-center justify-center gap-2 px-6 py-2.5 text-xs font-semibold text-neutral-950 bg-sky-400 hover:bg-sky-300 rounded-lg shadow-sm transition-colors"
                 >
@@ -329,6 +329,84 @@ export const AppDetailsModal: React.FC<AppDetailsModalProps> = ({
                     <div className="h-full bg-sky-400 rounded-full w-2" />
                   </div>
                 </div>
+              </div>
+
+              {/* Custom Path Installation Target */}
+              <div className="p-4 rounded-xl bg-neutral-950 border border-neutral-800 space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <Folder className="w-4 h-4 text-sky-400" />
+                    <h4 className="text-xs font-semibold uppercase tracking-wider text-neutral-200">
+                      Installation Target Path
+                    </h4>
+                  </div>
+
+                  <label className="flex items-center gap-2 text-xs text-neutral-300 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={enableCustomLocation}
+                      onChange={e => setEnableCustomLocation(e.target.checked)}
+                      className="w-3.5 h-3.5 rounded bg-neutral-800 border-neutral-700 text-sky-500 focus:ring-0 cursor-pointer"
+                    />
+                    <span className="text-[11px] font-mono text-neutral-300">
+                      Customize Directory (<code className="text-sky-400">--location</code>)
+                    </span>
+                  </label>
+                </div>
+
+                {enableCustomLocation ? (
+                  <div className="space-y-2.5 pt-1">
+                    <div className="relative">
+                      <FolderOpen className="w-4 h-4 text-neutral-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="text"
+                        value={customLocationPath}
+                        onChange={e => setCustomLocationPath(e.target.value)}
+                        placeholder="e.g. D:\Software\Application or C:\Apps\..."
+                        className="w-full pl-9 pr-3 py-2 bg-neutral-900 border border-neutral-800 rounded-lg text-xs font-mono text-neutral-100 placeholder-neutral-500 focus:outline-none focus:border-sky-500 transition-colors"
+                      />
+                    </div>
+
+                    {/* Quick Drive Presets */}
+                    <div className="flex flex-wrap items-center gap-2 text-[11px] text-neutral-400">
+                      <span className="text-neutral-500 text-[10px] uppercase font-mono">Presets:</span>
+                      <button
+                        type="button"
+                        onClick={() => setCustomLocationPath(`C:\\Program Files\\${pkg.name}`)}
+                        className="px-2 py-0.5 rounded bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 text-neutral-300 hover:text-white font-mono text-[10px] transition-colors"
+                      >
+                        C:\Program Files\{pkg.name}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCustomLocationPath(`D:\\Software\\${pkg.name}`)}
+                        className="px-2 py-0.5 rounded bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 text-neutral-300 hover:text-white font-mono text-[10px] transition-colors"
+                      >
+                        D:\Software\{pkg.name}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCustomLocationPath(`D:\\Apps\\${pkg.name}`)}
+                        className="px-2 py-0.5 rounded bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 text-neutral-300 hover:text-white font-mono text-[10px] transition-colors"
+                      >
+                        D:\Apps\{pkg.name}
+                      </button>
+                      {pkg.category === 'Gaming' && (
+                        <button
+                          type="button"
+                          onClick={() => setCustomLocationPath(`E:\\Games\\${pkg.name}`)}
+                          className="px-2 py-0.5 rounded bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 text-neutral-300 hover:text-white font-mono text-[10px] transition-colors"
+                        >
+                          E:\Games\{pkg.name}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-neutral-400 font-mono">
+                    Default target directory: <span className="text-neutral-300">C:\Program Files\{pkg.name}</span> (standard WinGet destination)
+                  </p>
+                )}
               </div>
 
               {/* Technical Specifications Grid */}

@@ -44,7 +44,11 @@ export default function App() {
 
   // Modals & Drawers
   const [detailedPackage, setDetailedPackage] = useState<Package | null>(null);
-  const [uacPackage, setUacPackage] = useState<{ pkg: Package; action: TaskAction } | null>(null);
+  const [uacPackage, setUacPackage] = useState<{
+    pkg: Package;
+    action: TaskAction;
+    customLocation?: string;
+  } | null>(null);
   const [quickSearchOpen, setQuickSearchOpen] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [isSidebarCompact, setIsSidebarCompact] = useState(false);
@@ -121,7 +125,7 @@ export default function App() {
 
   const handleActionClick = (pkg: Package, action: TaskAction, options?: any) => {
     if (settings.requireConfirmation && !options?.forceBypassUac) {
-      setUacPackage({ pkg, action });
+      setUacPackage({ pkg, action, customLocation: options?.customLocation });
       return;
     }
 
@@ -130,20 +134,28 @@ export default function App() {
   };
 
   const executeAction = (pkg: Package, action: TaskAction, options?: any) => {
+    const finalLocation =
+      options?.customLocation ||
+      (settings.useCustomLocationByDefault && settings.defaultCustomLocation
+        ? `${settings.defaultCustomLocation}\\${pkg.name}`
+        : undefined);
+
     installationQueue.enqueue(pkg, action, {
       silent: options?.silent ?? settings.silentInstall,
       force: options?.force ?? false,
       architecture: settings.preferredArchitecture,
+      customLocation: finalLocation,
     });
 
     // Auto-open terminal drawer to give power users immediate feedback
     setTerminalOpen(true);
   };
 
-  const handleUacConfirm = (options: { silent: boolean; force: boolean }) => {
+  const handleUacConfirm = (options: { silent: boolean; force: boolean; customLocation?: string }) => {
     if (!uacPackage) return;
     executeAction(uacPackage.pkg, uacPackage.action, {
       ...options,
+      customLocation: options.customLocation ?? uacPackage.customLocation,
       forceBypassUac: true,
     });
     setUacPackage(null);
@@ -394,6 +406,7 @@ export default function App() {
       <UACConfirmModal
         pkg={uacPackage ? uacPackage.pkg : null}
         action={uacPackage ? uacPackage.action : 'install'}
+        initialCustomLocation={uacPackage?.customLocation}
         onConfirm={handleUacConfirm}
         onCancel={() => setUacPackage(null)}
       />

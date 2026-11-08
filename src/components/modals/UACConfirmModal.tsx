@@ -1,23 +1,38 @@
 import React from 'react';
-import { ShieldAlert, Check, X, Terminal, Cpu } from 'lucide-react';
+import { ShieldAlert, Check, X, Terminal, Cpu, Folder, FolderOpen } from 'lucide-react';
 import { Package, TaskAction } from '../../types';
 import { AppIconImage } from '../common/AppIconImage';
 
 interface UACConfirmModalProps {
   pkg: Package | null;
   action: TaskAction;
-  onConfirm: (options: { silent: boolean; force: boolean }) => void;
+  initialCustomLocation?: string;
+  onConfirm: (options: { silent: boolean; force: boolean; customLocation?: string }) => void;
   onCancel: () => void;
 }
 
 export const UACConfirmModal: React.FC<UACConfirmModalProps> = ({
   pkg,
   action,
+  initialCustomLocation,
   onConfirm,
   onCancel,
 }) => {
   const [silent, setSilent] = React.useState(true);
   const [force, setForce] = React.useState(false);
+  const [useCustomLocation, setUseCustomLocation] = React.useState(!!initialCustomLocation);
+  const [customLocation, setCustomLocation] = React.useState(
+    initialCustomLocation || (pkg ? `D:\\Software\\${pkg.name}` : '')
+  );
+
+  React.useEffect(() => {
+    if (initialCustomLocation) {
+      setUseCustomLocation(true);
+      setCustomLocation(initialCustomLocation);
+    } else if (pkg) {
+      setCustomLocation(`D:\\Software\\${pkg.name}`);
+    }
+  }, [initialCustomLocation, pkg]);
 
   if (!pkg) return null;
 
@@ -66,11 +81,38 @@ export const UACConfirmModal: React.FC<UACConfirmModalProps> = ({
           </div>
 
           <p className="text-xs text-neutral-300 leading-relaxed">
-            You are about to <strong className="text-neutral-100">{actionText}</strong> this package using the official Microsoft WinGet package manager. This process will register files to Program Files and write system configurations.
+            You are about to <strong className="text-neutral-100">{actionText}</strong> this package using the official Microsoft WinGet package manager. This process will register files and write system configurations.
           </p>
 
-          {/* Options: Silent & Force */}
-          <div className="space-y-2 pt-2 border-t border-neutral-800/80">
+          {/* Options: Custom Path, Silent & Force */}
+          <div className="space-y-3 pt-2 border-t border-neutral-800/80">
+            {action !== 'uninstall' && (
+              <div className="space-y-1.5">
+                <label className="flex items-center gap-2.5 text-xs text-neutral-300 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={useCustomLocation}
+                    onChange={e => setUseCustomLocation(e.target.checked)}
+                    className="w-4 h-4 rounded bg-neutral-800 border-neutral-700 text-sky-500 focus:ring-0 focus:ring-offset-0 cursor-pointer"
+                  />
+                  <span>Install to custom location (<code className="text-sky-400">--location</code>)</span>
+                </label>
+
+                {useCustomLocation && (
+                  <div className="relative pl-6">
+                    <FolderOpen className="w-3.5 h-3.5 text-neutral-500 absolute left-8 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={customLocation}
+                      onChange={e => setCustomLocation(e.target.value)}
+                      placeholder="e.g. D:\Software\..."
+                      className="w-full pl-8 pr-3 py-1.5 bg-neutral-950 border border-neutral-800 rounded-lg text-xs font-mono text-neutral-200 placeholder-neutral-500 focus:outline-none focus:border-sky-500 transition-colors"
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+
             <label className="flex items-center gap-2.5 text-xs text-neutral-300 cursor-pointer select-none">
               <input
                 type="checkbox"
@@ -102,7 +144,13 @@ export const UACConfirmModal: React.FC<UACConfirmModalProps> = ({
             Cancel
           </button>
           <button
-            onClick={() => onConfirm({ silent, force })}
+            onClick={() =>
+              onConfirm({
+                silent,
+                force,
+                customLocation: useCustomLocation && customLocation.trim() ? customLocation.trim() : undefined,
+              })
+            }
             className="flex items-center gap-1.5 px-5 py-2 text-xs font-semibold text-neutral-950 bg-sky-400 hover:bg-sky-300 rounded-lg shadow-sm transition-colors"
           >
             <Check className="w-3.5 h-3.5" />

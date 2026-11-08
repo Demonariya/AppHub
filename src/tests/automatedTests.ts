@@ -189,6 +189,29 @@ export async function runAllAutomatedTests(): Promise<TestResult[]> {
     if (!iconUrl || !iconUrl.startsWith('http')) {
       throw new Error(`Invalid fetched icon URL: ${iconUrl}`);
     }
+    // Verify none of the initial packages use dead github paths
+    for (const pkg of INITIAL_PACKAGES) {
+      const u = getAppIconUrl(pkg);
+      if (u.includes('raw.githubusercontent.com/microsoft/winget-pkgs')) {
+        throw new Error(`Detected dead winget-pkgs icon URL on ${pkg.id}`);
+      }
+    }
+  });
+
+  // Suite 9: Custom Path Installation
+  await runTest('Custom Path Installation', 'Builds safe argument vectors with --location', () => {
+    const customPath = 'D:\\Software\\VSCode';
+    const args = wingetEngine.buildInstallArgs('Microsoft.VisualStudioCode', {
+      customLocation: customPath,
+      silent: true,
+    });
+    if (!args.includes('--location') || !args.includes(customPath)) {
+      throw new Error(`Missing --location parameter in install args: ${args.join(' ')}`);
+    }
+    const cliPreview = wingetEngine.formatCliPreview(args);
+    if (!cliPreview.includes('--location "D:\\Software\\VSCode"')) {
+      throw new Error(`Incorrect CLI formatting for custom location: ${cliPreview}`);
+    }
   });
 
   return results;
