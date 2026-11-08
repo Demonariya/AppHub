@@ -38,7 +38,9 @@ jobs:
           workspaces: './src-tauri -> target'
 
       - name: Install Frontend Dependencies
-        run: npm install
+        run: |
+          npm install
+          npm install --no-save @typescript/typescript-win32-x64
 
       - name: Run Type Checking & Linting
         run: npm run lint
