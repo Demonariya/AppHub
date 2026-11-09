@@ -60,13 +60,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tauriScript: npm run tauri
+          appName: AppHub
+          appVersion: 0.1.0
           tagName: v__VERSION__
           releaseName: 'AppHub v__VERSION__'
           releaseBody: 'Production release of AppHub Windows Package Store. Powered by Microsoft WinGet.'
           releaseDraft: false
           prerelease: false
           includeRelease: ${{ startsWith(github.ref, 'refs/tags/v') }}
-          args: --target x86_64-pc-windows-msvc
 
       - name: Upload Installer Artifacts
         uses: actions/upload-artifact@v4
