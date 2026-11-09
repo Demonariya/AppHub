@@ -39,7 +39,7 @@ jobs:
           workspaces: './src-tauri -> target'
 
       - name: Install Frontend Dependencies
-        shell: powershell
+        shell: pwsh
         run: |
           npm ci
           node scripts/install-windows-deps.mjs
@@ -96,52 +96,59 @@ jobs:
           prerelease: false
 
       - name: Verify Windows Installer Artifacts
-        shell: powershell
+        shell: pwsh
         run: |
-          Write-Host "====================================================="
-          Write-Host "🔍 Verifying AppHub Windows Installer Artifacts"
-          Write-Host "====================================================="
-          
-          $nsisDir = "src-tauri/target/release/bundle/nsis"
-          $msiDir = "src-tauri/target/release/bundle/msi"
-          
-          $nsisFiles = Get-ChildItem -Path "$nsisDir/*.exe" -ErrorAction SilentlyContinue
-          $msiFiles = Get-ChildItem -Path "$msiDir/*.msi" -ErrorAction SilentlyContinue
-          
-          Write-Host "Checking NSIS path: $nsisDir"
-          if (-not $nsisFiles -or $nsisFiles.Count -eq 0) {
-              Write-Error "❌ CRITICAL: No NSIS installer (.exe) was found in $nsisDir!"
-              Write-Host "Listing all files in src-tauri/target:"
-              Get-ChildItem -Path "src-tauri/target" -Recurse -ErrorAction SilentlyContinue | Select-Object FullName, Length
-              exit 1
+          $ErrorActionPreference = 'Stop'
+
+          $workspace = $env:GITHUB_WORKSPACE
+
+          $nsisDir = Join-Path $workspace 'src-tauri/target/release/bundle/nsis'
+          $msiDir = Join-Path $workspace 'src-tauri/target/release/bundle/msi'
+
+          Write-Host 'Verifying AppHub Windows installers...'
+
+          $nsisFiles = @(
+              Get-ChildItem -LiteralPath $nsisDir -Filter '*.exe' -File -ErrorAction SilentlyContinue
+          )
+
+          $msiFiles = @(
+              Get-ChildItem -LiteralPath $msiDir -Filter '*.msi' -File -ErrorAction SilentlyContinue
+          )
+
+          if ($nsisFiles.Count -eq 0) {
+              throw ("Missing NSIS installer in: {0}" -f $nsisDir)
           }
-          
-          Write-Host "Checking MSI path: $msiDir"
-          if (-not $msiFiles -or $msiFiles.Count -eq 0) {
-              Write-Error "❌ CRITICAL: No MSI installer (.msi) was found in $msiDir!"
-              Write-Host "Listing all files in src-tauri/target:"
-              Get-ChildItem -Path "src-tauri/target" -Recurse -ErrorAction SilentlyContinue | Select-Object FullName, Length
-              exit 1
+
+          if ($msiFiles.Count -eq 0) {
+              throw ("Missing MSI installer in: {0}" -f $msiDir)
           }
-          
-          foreach ($file in ($nsisFiles + $msiFiles)) {
+
+          $allInstallers = @($nsisFiles) + @($msiFiles)
+
+          foreach ($file in $allInstallers) {
               if ($file.Length -lt 1000000) {
-                  Write-Error "❌ CRITICAL: Installer $($file.FullName) is suspiciously small ($($file.Length) bytes)!"
-                  exit 1
+                  throw ("Installer is suspiciously small: {0} ({1} bytes)" -f $file.FullName, $file.Length)
               }
+
               $sizeMB = [math]::Round($file.Length / 1MB, 2)
-              Write-Host "✓ Verified installer: $($file.Name) [Size: ${sizeMB} MB, FullPath: $($file.FullName)]"
+
+              Write-Host (
+                  "Verified installer: {0} | Size: {1:N2} MB | Path: {2}" -f
+                  $file.Name,
+                  $sizeMB,
+                  $file.FullName
+              )
           }
-          
-          Write-Host "====================================================="
-          Write-Host "✅ All required Windows installers successfully verified!"
-          Write-Host "====================================================="
+
+          Write-Host 'All required Windows installers successfully verified.'
 
       - name: Upload Installer Artifacts
         uses: actions/upload-artifact@v4
+        if: success()
         with:
           name: AppHub-Windows-x64-Installers
           if-no-files-found: error
+          retention-days: 14
           path: |
             src-tauri/target/release/bundle/nsis/*.exe
             src-tauri/target/release/bundle/msi/*.msi
