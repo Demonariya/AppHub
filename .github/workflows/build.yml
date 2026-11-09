@@ -1,11 +1,11 @@
-name: Release Build
+name: Build & Release AppHub
 
 on:
   push:
-    tags:
-      - 'v*'
     branches:
       - main
+    tags:
+      - 'v*'
   pull_request:
     branches:
       - main
@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   test-and-build:
-    name: Build & Release AppHub (Windows x64)
+    name: Build & Package AppHub (Windows x64)
     runs-on: windows-latest
 
     steps:
@@ -26,26 +26,28 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: 'npm'
 
-      - name: Install Rust Stable
+      - name: Install Rust Stable Toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
 
-      - name: Rust Cache
+      - name: Setup Rust Cache
         uses: swatinem/rust-cache@v2
         with:
           workspaces: './src-tauri -> target'
 
       - name: Install Frontend Dependencies
+        shell: powershell
         run: |
-          npm install
+          npm ci
           node scripts/install-windows-deps.mjs
 
       - name: Run Type Checking & Linting
         run: npm run lint
 
-      - name: Run Frontend & WinGet Integration Tests
+      - name: Run Frontend & WinGet Automated Tests
         run: npx tsx scripts/test-runner.ts
 
       - name: Run Rust Automated Tests
@@ -54,32 +56,94 @@ jobs:
       - name: Build Frontend Assets
         run: npm run build
 
-      - name: Build Tauri Desktop Installers (NSIS & MSI)
-        uses: tauri-apps/tauri-action@v0
+      # For Pull Requests and Main Branch: compile installers without publishing GitHub Release
+      - name: Build Tauri Desktop Installers (CI / Main)
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tauriScript: npm run tauri
-          appName: AppHub
-          appVersion: 0.1.0
-          tagName: v__VERSION__
-          releaseName: 'AppHub v__VERSION__'
-          releaseBody: 'Production release of AppHub Windows Package Store. Powered by Microsoft WinGet.'
+          projectPath: .
+
+      # For Version Tags (v*): compile installers and publish official GitHub Release
+      - name: Build & Publish Tauri Release (Version Tags)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tauriScript: npm run tauri
+          projectPath: .
+          tagName: ${{ github.ref_name }}
+          releaseName: 'AppHub ${{ github.ref_name }}'
+          releaseBody: |
+            ## AppHub ${{ github.ref_name }}
+            
+            Official release of AppHub — Premium Windows Package Store powered by Microsoft WinGet.
+            
+            ### Included Windows Installers:
+            - **NSIS Setup (.exe)**: Standard Windows desktop installer with automatic elevation and start menu integration.
+            - **WiX Installer (.msi)**: Enterprise Windows Installer package for silent and managed group policy deployment.
+            
+            ### Verification:
+            - Architecture: Windows x64 (`x86_64-pc-windows-msvc`)
+            - Package Manager: Microsoft WinGet CLI engine
+            - Cryptographic SHA256 integrity checked
+            
+            See [CHANGELOG.md](https://github.com/Demonariya/AppHub/blob/main/CHANGELOG.md) for full change history.
           releaseDraft: false
           prerelease: false
-          includeRelease: ${{ startsWith(github.ref, 'refs/tags/v') }}
+
+      - name: Verify Windows Installer Artifacts
+        shell: powershell
+        run: |
+          Write-Host "====================================================="
+          Write-Host "🔍 Verifying AppHub Windows Installer Artifacts"
+          Write-Host "====================================================="
+          
+          $nsisDir = "src-tauri/target/release/bundle/nsis"
+          $msiDir = "src-tauri/target/release/bundle/msi"
+          
+          $nsisFiles = Get-ChildItem -Path "$nsisDir/*.exe" -ErrorAction SilentlyContinue
+          $msiFiles = Get-ChildItem -Path "$msiDir/*.msi" -ErrorAction SilentlyContinue
+          
+          Write-Host "Checking NSIS path: $nsisDir"
+          if (-not $nsisFiles -or $nsisFiles.Count -eq 0) {
+              Write-Error "❌ CRITICAL: No NSIS installer (.exe) was found in $nsisDir!"
+              Write-Host "Listing all files in src-tauri/target:"
+              Get-ChildItem -Path "src-tauri/target" -Recurse -ErrorAction SilentlyContinue | Select-Object FullName, Length
+              exit 1
+          }
+          
+          Write-Host "Checking MSI path: $msiDir"
+          if (-not $msiFiles -or $msiFiles.Count -eq 0) {
+              Write-Error "❌ CRITICAL: No MSI installer (.msi) was found in $msiDir!"
+              Write-Host "Listing all files in src-tauri/target:"
+              Get-ChildItem -Path "src-tauri/target" -Recurse -ErrorAction SilentlyContinue | Select-Object FullName, Length
+              exit 1
+          }
+          
+          foreach ($file in ($nsisFiles + $msiFiles)) {
+              if ($file.Length -lt 1000000) {
+                  Write-Error "❌ CRITICAL: Installer $($file.FullName) is suspiciously small ($($file.Length) bytes)!"
+                  exit 1
+              }
+              $sizeMB = [math]::Round($file.Length / 1MB, 2)
+              Write-Host "✓ Verified installer: $($file.Name) [Size: ${sizeMB} MB, FullPath: $($file.FullName)]"
+          }
+          
+          Write-Host "====================================================="
+          Write-Host "✅ All required Windows installers successfully verified!"
+          Write-Host "====================================================="
 
       - name: Upload Installer Artifacts
         uses: actions/upload-artifact@v4
-        if: success()
         with:
           name: AppHub-Windows-x64-Installers
-          if-no-files-found: warn
+          if-no-files-found: error
           path: |
-            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
-            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
             src-tauri/target/release/bundle/nsis/*.exe
             src-tauri/target/release/bundle/msi/*.msi
-            src-tauri/target/**/bundle/nsis/*.exe
-            src-tauri/target/**/bundle/msi/*.msi
+
 

@@ -182,18 +182,25 @@ export async function runAllAutomatedTests(): Promise<TestResult[]> {
     }
   });
 
-  // Suite 8: Real App Icons
-  await runTest('Real App Icons', 'Resolves authentic CDN and FaviconV2 icon URLs', () => {
+  // Suite 8: Real App Icons & Hierarchy
+  await runTest('Real App Icons', 'Resolves authentic CDN and official vector assets', () => {
     const sample = INITIAL_PACKAGES.find(p => p.id === 'Mozilla.Firefox')!;
     const iconUrl = getAppIconUrl(sample);
-    if (!iconUrl || !iconUrl.startsWith('http')) {
+    if (!iconUrl || (!iconUrl.startsWith('http') && !iconUrl.startsWith('data:image/'))) {
       throw new Error(`Invalid fetched icon URL: ${iconUrl}`);
     }
-    // Verify none of the initial packages use dead github paths
+    // Verify none of the initial packages use dead github paths or leaked generic microsoft favicons
     for (const pkg of INITIAL_PACKAGES) {
       const u = getAppIconUrl(pkg);
       if (u.includes('raw.githubusercontent.com/microsoft/winget-pkgs')) {
         throw new Error(`Detected dead winget-pkgs icon URL on ${pkg.id}`);
+      }
+      if (
+        u.includes('microsoft.com') &&
+        !pkg.id.toLowerCase().startsWith('microsoft.') &&
+        !pkg.id.toLowerCase().startsWith('markrussinovich.')
+      ) {
+        throw new Error(`Detected generic microsoft.com favicon leak on non-Microsoft package ${pkg.id}`);
       }
     }
   });
@@ -211,6 +218,88 @@ export async function runAllAutomatedTests(): Promise<TestResult[]> {
     const cliPreview = wingetEngine.formatCliPreview(args);
     if (!cliPreview.includes('--location "D:\\Software\\VSCode"')) {
       throw new Error(`Incorrect CLI formatting for custom location: ${cliPreview}`);
+    }
+  });
+
+  // Suite 10: VS Code Official Blue Brand Guarantee
+  await runTest('Icon Architecture', 'VS Code resolves strictly to official stable blue logo', async () => {
+    const { resolveAppIcon, getIconRecord } = await import('../services/icons');
+    const vscode = INITIAL_PACKAGES.find(p => p.id === 'Microsoft.VisualStudioCode')!;
+    const resolved = resolveAppIcon(vscode);
+
+    if (resolved.sourceType !== 'official-asset') {
+      throw new Error(`Expected official-asset sourceType for VS Code, got ${resolved.sourceType}`);
+    }
+    if (!resolved.src.startsWith('data:image/svg+xml')) {
+      throw new Error(`VS Code icon must be inline SVG data URI, got: ${resolved.src.slice(0, 50)}`);
+    }
+    // Must contain official Microsoft Blue hex colors
+    const decoded = decodeURIComponent(resolved.src);
+    if (!decoded.includes('#007ACC') && !decoded.includes('#0065A9')) {
+      throw new Error('VS Code SVG is missing official blue brand color values');
+    }
+    // Must NOT contain green Insiders or orange Exploration colors
+    if (decoded.includes('#238636') || decoded.includes('#D97706')) {
+      throw new Error('VS Code SVG contains non-stable branch colors (green or orange)');
+    }
+
+    // Case-insensitivity test
+    const lowerRecord = getIconRecord('microsoft.visualstudiocode');
+    if (!lowerRecord || lowerRecord.packageId !== 'Microsoft.VisualStudioCode') {
+      throw new Error('Case-insensitive lookup failed for microsoft.visualstudiocode');
+    }
+  });
+
+  // Suite 11: Icon Cache Isolation & Invalidation
+  await runTest('Icon Architecture', 'Cache isolates entries and honors invalidation', async () => {
+    const { resolveAppIcon, getCachedIcon, invalidateIconCache } = await import('../services/icons');
+    const pkg: Package = {
+      id: 'Test.App.Cache',
+      name: 'Test App',
+      publisher: 'Test Publisher',
+      version: '1.0.0',
+      latestVersion: '1.0.0',
+      description: 'Test app',
+      category: 'Utilities',
+      tags: [],
+      source: 'winget',
+      architectures: ['x64'],
+      license: 'MIT',
+      homepage: 'https://testapp.org',
+      rating: 5,
+      ratingCount: 1,
+      releaseDate: '2024-01-01',
+      verified: true,
+    };
+
+    const first = resolveAppIcon(pkg);
+    const cached = getCachedIcon('Test.App.Cache');
+    if (!cached || !cached.diagnostic.cacheHit) {
+      throw new Error('Expected icon to be cached with cacheHit flag');
+    }
+
+    // Invalidation
+    invalidateIconCache('Test.App.Cache');
+    const afterInvalidation = getCachedIcon('Test.App.Cache');
+    if (afterInvalidation) {
+      throw new Error('Cache entry was not cleared after invalidateIconCache');
+    }
+  });
+
+  // Suite 12: Icon Validator & Malformed Input Handling
+  await runTest('Icon Architecture', 'Rejects dead repos and malformed URLs', async () => {
+    const { isValidIconUrl, isGenericFaviconLeak } = await import('../services/icons');
+    if (isValidIconUrl('https://raw.githubusercontent.com/microsoft/winget-pkgs/icons/foo.png')) {
+      throw new Error('Should have rejected dead winget-pkgs repository URL');
+    }
+    if (isValidIconUrl('javascript:alert(1)')) {
+      throw new Error('Should have rejected non-http script scheme URL');
+    }
+    if (!isValidIconUrl('https://raw.githubusercontent.com/alrra/browser-logos/main/src/firefox/firefox_128x128.png')) {
+      throw new Error('Should have accepted valid official CDN URL');
+    }
+    if (!isGenericFaviconLeak('https://microsoft.com/favicon.ico', 'Mozilla.Firefox')) {
+      throw new Error('Should have detected generic microsoft.com favicon leak on Firefox');
     }
   });
 

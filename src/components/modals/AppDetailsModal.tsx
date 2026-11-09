@@ -30,6 +30,7 @@ import {
 import { wingetEngine } from '../../services/wingetEngine';
 import { storage } from '../../services/storage';
 import { AppIconImage } from '../common/AppIconImage';
+import { getIconDiagnostics } from '../../services/icons';
 
 interface AppDetailsModalProps {
   pkg: Package | null;
@@ -85,6 +86,7 @@ export const AppDetailsModal: React.FC<AppDetailsModalProps> = ({
   if (!pkg) return null;
 
   const effectiveCustomLocation = enableCustomLocation && customLocationPath.trim() ? customLocationPath.trim() : undefined;
+  const iconDiag = getIconDiagnostics(pkg.id);
   const hasUpdate = pkg.isInstalled && pkg.installedVersion && pkg.installedVersion !== pkg.latestVersion;
   const installCli = wingetEngine.formatCliPreview(
     wingetEngine.buildInstallArgs(pkg.id, {
@@ -496,6 +498,24 @@ export const AppDetailsModal: React.FC<AppDetailsModalProps> = ({
                     </div>
                     <div className="text-xs font-mono text-sky-400 font-semibold">
                       {pkg.formattedInstalledSize || '~150 MB'}
+                    </div>
+                  </div>
+
+                  <div className="p-3 rounded-lg bg-neutral-950/60 border border-neutral-800/80 space-y-1">
+                    <div className="flex items-center gap-1.5 text-xs text-neutral-400">
+                      <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                      <span>Icon Asset</span>
+                    </div>
+                    <div className="text-xs font-mono text-neutral-200 truncate" title={iconDiag.notes || iconDiag.primaryUrl}>
+                      {iconDiag.sourceType === 'official-asset'
+                        ? 'Official Vector SVG'
+                        : iconDiag.sourceType === 'official-cdn'
+                        ? 'Official Developer CDN'
+                        : iconDiag.sourceType === 'curated-registry'
+                        ? 'Curated Authentic Icon'
+                        : iconDiag.sourceType === 'package-manifest'
+                        ? 'Manifest Metadata'
+                        : 'Neutral Monogram'}
                     </div>
                   </div>
                 </div>

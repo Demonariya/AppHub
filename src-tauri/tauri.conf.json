@@ -12,6 +12,7 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "AppHub — Windows Package Store",
         "width": 1280,
         "height": 840,

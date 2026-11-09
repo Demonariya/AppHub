@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Package } from '../../types';
-import { getAppIconUrl, getSecondaryIconFallback } from '../../services/iconService';
+import { resolveAppIcon } from '../../services/icons';
+import { generateNeutralMonogramUri } from '../../services/icons/placeholder';
 
 interface AppIconImageProps {
   pkg: Package;
@@ -15,18 +16,29 @@ export const AppIconImage: React.FC<AppIconImageProps> = ({
 }) => {
   const [loaded, setLoaded] = useState(false);
   const [useFallback, setUseFallback] = useState(false);
-  const [hasError, setHasError] = useState(false);
+  const [useNeutralPlaceholder, setUseNeutralPlaceholder] = useState(false);
 
-  React.useEffect(() => {
+  // Re-resolve icon whenever pkg.id or pkg.icon changes
+  const resolved = React.useMemo(() => resolveAppIcon(pkg), [pkg.id, pkg.icon, pkg.name, pkg.category]);
+
+  useEffect(() => {
     setLoaded(false);
     setUseFallback(false);
-    setHasError(false);
+    setUseNeutralPlaceholder(false);
   }, [pkg.id]);
 
-  const primaryUrl = getAppIconUrl(pkg);
-  const fallbackUrl = getSecondaryIconFallback(pkg);
+  let currentSrc = resolved.src;
+  if (useNeutralPlaceholder) {
+    currentSrc = generateNeutralMonogramUri({
+      name: pkg.name,
+      category: pkg.category,
+      packageId: pkg.id,
+    });
+  } else if (useFallback && resolved.fallbackSrc) {
+    currentSrc = resolved.fallbackSrc;
+  }
 
-  const currentSrc = useFallback ? fallbackUrl : primaryUrl;
+  const isDataUri = currentSrc.startsWith('data:');
 
   const sizeClass =
     size === 'sm'
@@ -49,45 +61,31 @@ export const AppIconImage: React.FC<AppIconImageProps> = ({
   return (
     <div
       className={`${containerClass} bg-neutral-900 border border-neutral-800/80 flex items-center justify-center shrink-0 overflow-hidden relative shadow-inner ${className}`}
+      title={`${pkg.name} (${resolved.sourceType})`}
     >
-      {/* Loading Skeleton */}
-      {!loaded && !hasError && (
+      {/* Skeleton Pulse during initial network load (not shown for instant inline SVGs) */}
+      {!loaded && !isDataUri && (
         <div className="absolute inset-0 bg-neutral-800/60 animate-pulse" />
       )}
 
-      {/* Real App Icon */}
-      {!hasError ? (
-        <img
-          src={currentSrc}
-          alt={pkg.name}
-          referrerPolicy="no-referrer"
-          onLoad={() => setLoaded(true)}
-          onError={() => {
-            if (!useFallback) {
-              setUseFallback(true);
-            } else {
-              setHasError(true);
-            }
-          }}
-          className={`${sizeClass} object-contain transition-opacity duration-200 ${
-            loaded ? 'opacity-100' : 'opacity-0'
-          }`}
-        />
-      ) : (
-        /* If both network requests fail, show clean high-contrast SVG brand representation */
-        <svg
-          viewBox="0 0 24 24"
-          className={`${sizeClass} text-neutral-400`}
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.75"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <rect width="18" height="18" x="3" y="3" rx="2" />
-          <path d="M7 7h10v10H7z" />
-        </svg>
-      )}
+      <img
+        src={currentSrc}
+        alt={resolved.altText || pkg.name}
+        referrerPolicy="no-referrer"
+        loading="lazy"
+        onLoad={() => setLoaded(true)}
+        onError={() => {
+          if (!useFallback && resolved.fallbackSrc) {
+            setUseFallback(true);
+          } else if (!useNeutralPlaceholder) {
+            setUseNeutralPlaceholder(true);
+            setLoaded(true);
+          }
+        }}
+        className={`${sizeClass} object-contain transition-opacity duration-200 select-none ${
+          loaded || isDataUri ? 'opacity-100' : 'opacity-0'
+        }`}
+      />
     </div>
   );
 };
