@@ -18,8 +18,10 @@ export const AppIconImage: React.FC<AppIconImageProps> = ({
   const [useFallback, setUseFallback] = useState(false);
   const [useNeutralPlaceholder, setUseNeutralPlaceholder] = useState(false);
 
-  // Re-resolve icon whenever pkg.id or pkg.icon changes
-  const resolved = React.useMemo(() => resolveAppIcon(pkg), [pkg.id, pkg.icon, pkg.name, pkg.category]);
+  const resolved = React.useMemo(
+    () => resolveAppIcon(pkg),
+    [pkg.id, pkg.icon, pkg.name, pkg.category]
+  );
 
   useEffect(() => {
     setLoaded(false);
@@ -51,21 +53,20 @@ export const AppIconImage: React.FC<AppIconImageProps> = ({
 
   const containerClass =
     size === 'sm'
-      ? 'w-8 h-8 rounded-md'
+      ? 'w-8 h-8 rounded-[6px]'
       : size === 'md'
-      ? 'w-11 h-11 rounded-lg'
+      ? 'w-11 h-11 rounded-[8px]'
       : size === 'lg'
-      ? 'w-16 h-16 rounded-xl'
-      : 'w-20 h-20 rounded-2xl';
+      ? 'w-16 h-16 rounded-[12px]'
+      : 'w-20 h-20 rounded-[14px]';
 
   return (
     <div
-      className={`${containerClass} bg-neutral-900 border border-neutral-800/80 flex items-center justify-center shrink-0 overflow-hidden relative shadow-inner ${className}`}
+      className={`${containerClass} bg-[var(--surface-subtle)] border border-[var(--border-subtle)] flex items-center justify-center shrink-0 overflow-hidden relative ${className}`}
       title={`${pkg.name} (${resolved.sourceType})`}
     >
-      {/* Skeleton Pulse during initial network load (not shown for instant inline SVGs) */}
       {!loaded && !isDataUri && (
-        <div className="absolute inset-0 bg-neutral-800/60 animate-pulse" />
+        <div className="absolute inset-0 bg-[var(--surface-hover)] animate-pulse" />
       )}
 
       <img

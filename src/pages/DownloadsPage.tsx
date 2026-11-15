@@ -1,22 +1,29 @@
-import React from 'react';
-import { InstallationTask, TaskStatus } from '../types';
+import React, { useState, useMemo } from 'react';
+import { InstallationTask, Package } from '../types';
 import {
-  Download,
-  CheckCircle2,
-  XCircle,
+  Activity,
   Clock,
   RotateCw,
   X,
   Terminal,
   Trash2,
-  AlertTriangle,
-  Play,
-  Pause,
 } from 'lucide-react';
+import { AppIconImage } from '../components/common/AppIconImage';
+import {
+  PageHeader,
+  SegmentedTabs,
+  StatusBadge,
+  OperationProgress,
+  Button,
+  EmptyState,
+  ConfirmationDialog,
+} from '../components/ui';
 
 interface DownloadsPageProps {
+  packages?: Package[];
   queue: InstallationTask[];
   activeTask: InstallationTask | null;
+  activeTasks?: InstallationTask[];
   historyTasks: InstallationTask[];
   onCancelTask: (taskId: string) => void;
   onRetryTask: (taskId: string) => void;
@@ -24,230 +31,369 @@ interface DownloadsPageProps {
   onOpenTerminalForTask: (task: InstallationTask) => void;
 }
 
+type ActivityFilter = 'all' | 'active' | 'completed' | 'failed' | 'cancelled';
+
 export const DownloadsPage: React.FC<DownloadsPageProps> = ({
+  packages = [],
   queue,
   activeTask,
+  activeTasks,
   historyTasks,
   onCancelTask,
   onRetryTask,
   onClearHistory,
   onOpenTerminalForTask,
 }) => {
+  const [filter, setFilter] = useState<ActivityFilter>('all');
+  const [confirmClearOpen, setConfirmClearOpen] = useState(false);
+
+  const runningTasks =
+    activeTasks && activeTasks.length > 0 ? activeTasks : activeTask ? [activeTask] : [];
+
+  const packageById = useMemo(() => {
+    const map = new Map<string, Package>();
+    for (const p of packages) {
+      map.set(p.id.toLowerCase(), p);
+    }
+    return map;
+  }, [packages]);
+
+  const resolveTaskPkg = (task: InstallationTask): Package => {
+    const known = packageById.get(task.packageId.toLowerCase());
+    if (known) return known;
+    return {
+      id: task.packageId,
+      name: task.packageName,
+      publisher: task.packageId.split('.')[0] || 'WinGet',
+      version: task.version,
+      latestVersion: task.targetVersion || task.version,
+      description: '',
+      category: 'Utilities',
+      tags: [],
+      source: 'winget',
+      architectures: ['x64'],
+      license: '',
+      homepage: '',
+      releaseDate: '',
+      verified: true,
+    };
+  };
+
+  const formatExitCode = (code?: number) => {
+    if (code === undefined || code === null) return null;
+    if (code === 0) return 'Exit 0';
+    if (code < 0 || code > 255) {
+      return `0x${(code >>> 0).toString(16).toUpperCase()}`;
+    }
+    return `Exit ${code}`;
+  };
+
+  const completedTasks = historyTasks.filter(t => t.status === 'completed');
+  const failedTasks = historyTasks.filter(t => t.status === 'failed');
+  const cancelledTasks = historyTasks.filter(t => t.status === 'cancelled');
+
+  const visibleHistory = useMemo(() => {
+    if (filter === 'completed') return completedTasks;
+    if (filter === 'failed') return failedTasks;
+    if (filter === 'cancelled') return cancelledTasks;
+    if (filter === 'active') return [];
+    return historyTasks;
+  }, [filter, historyTasks, completedTasks, failedTasks, cancelledTasks]);
+
+  const showActiveSection = filter === 'all' || filter === 'active';
+  const showHistorySection = filter !== 'active';
+
   return (
-    <div className="p-4 sm:p-8 max-w-7xl mx-auto space-y-8">
-      {/* Page Header */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-xl font-bold text-neutral-100">Installation Queue & History</h1>
-          <p className="text-xs text-neutral-400 mt-1">
-            Real-time WinGet task runner with sequential process execution and live telemetry.
-          </p>
-        </div>
+    <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-6 animate-page-in">
+      <PageHeader
+        title="Operations & Queue"
+        subtitle="Live WinGet process execution, pending tasks, and persistent SQLite operation history."
+        actions={
+          historyTasks.length > 0 ? (
+            <Button
+              size="md"
+              variant="danger"
+              leftIcon={<Trash2 className="w-3.5 h-3.5" />}
+              onClick={() => setConfirmClearOpen(true)}
+            >
+              Clear History
+            </Button>
+          ) : undefined
+        }
+      />
 
-        {historyTasks.length > 0 && (
-          <button
-            onClick={onClearHistory}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-neutral-400 hover:text-red-400 hover:bg-neutral-900 border border-neutral-800 rounded-lg transition-colors"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-            <span>Clear History</span>
-          </button>
-        )}
-      </div>
+      <SegmentedTabs
+        value={filter}
+        onChange={setFilter}
+        ariaLabel="Filter operations by status"
+        options={[
+          {
+            id: 'all',
+            label: 'All Activity',
+            count: runningTasks.length + queue.length + historyTasks.length,
+          },
+          {
+            id: 'active',
+            label: 'Active & Queued',
+            count: runningTasks.length + queue.length,
+          },
+          { id: 'completed', label: 'Completed', count: completedTasks.length },
+          { id: 'failed', label: 'Failed', count: failedTasks.length },
+          { id: 'cancelled', label: 'Cancelled', count: cancelledTasks.length },
+        ]}
+      />
 
-      {/* Active Running Task Banner */}
-      {activeTask && (
-        <div className="p-5 rounded-2xl bg-gradient-to-r from-sky-950/40 via-neutral-900 to-neutral-900 border border-sky-800/50 shadow-xl space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-sky-500/20 border border-sky-500/30 flex items-center justify-center text-sky-400 shrink-0">
-                <Download className="w-5 h-5 animate-bounce" />
-              </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="font-semibold text-sm text-neutral-100">
-                    {activeTask.packageName}
-                  </span>
-                  <span className="text-xs font-mono text-sky-400 uppercase">
-                    [{activeTask.action}]
-                  </span>
+      {/* Active & Queued Section */}
+      {showActiveSection && (
+        <div className="space-y-4">
+          {runningTasks.length > 0 && (
+            <section className="space-y-3">
+              <h2 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                Currently Executing ({runningTasks.length})
+              </h2>
+              {runningTasks.map(task => (
+                <div
+                  key={task.id}
+                  className="p-5 rounded-[12px] bg-[var(--surface-panel)] border border-[var(--accent-border)] shadow-[var(--shadow-card)] space-y-4"
+                >
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div className="flex items-center gap-3.5 min-w-0">
+                      <AppIconImage pkg={resolveTaskPkg(task)} size="md" />
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-semibold text-sm text-[var(--text-primary)] truncate">
+                            {task.packageName}
+                          </span>
+                          <StatusBadge status="running" label={task.action.toUpperCase()} compact />
+                        </div>
+                        <div className="text-xs text-[var(--text-muted)] font-mono mt-0.5 flex flex-wrap items-center gap-1.5">
+                          <span>{task.packageId}</span>
+                          <span>·</span>
+                          <span>v{task.targetVersion || task.version}</span>
+                          {task.flags.customLocation && (
+                            <>
+                              <span>·</span>
+                              <span className="truncate max-w-xs text-[var(--text-secondary)]">
+                                {task.flags.customLocation}
+                              </span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        leftIcon={<Terminal className="w-3.5 h-3.5 text-[var(--accent-primary)]" />}
+                        onClick={() => onOpenTerminalForTask(task)}
+                      >
+                        Inspect Console
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="danger"
+                        leftIcon={<X className="w-3.5 h-3.5" />}
+                        onClick={() => onCancelTask(task.id)}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  </div>
+
+                  <OperationProgress
+                    status={task.status}
+                    progress={task.progress}
+                    isIndeterminate={task.isIndeterminate}
+                    downloadSpeed={task.downloadSpeed}
+                  />
                 </div>
-                <div className="text-xs text-neutral-400 font-mono mt-0.5 flex flex-wrap items-center gap-2">
-                  <span>Package ID: {activeTask.packageId}</span>
-                  <span className="text-neutral-600">·</span>
-                  <span>Target: v{activeTask.targetVersion}</span>
-                  <span className="text-neutral-600">·</span>
-                  <span className="text-neutral-300">Target Volume: C:\ (NTFS)</span>
-                </div>
+              ))}
+            </section>
+          )}
+
+          <section className="space-y-3">
+            <h2 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)] flex items-center gap-2">
+              <Clock className="w-3.5 h-3.5" />
+              <span>Pending Queue ({queue.length})</span>
+            </h2>
+
+            {queue.length > 0 ? (
+              <div className="rounded-[12px] border border-[var(--border-subtle)] divide-y divide-[var(--border-subtle)] bg-[var(--surface-panel)]">
+                {queue.map((task, index) => (
+                  <div
+                    key={task.id}
+                    className="p-3.5 flex items-center justify-between gap-4 hover:bg-[var(--surface-hover)]/60 transition-colors"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <span className="text-xs font-mono text-[var(--text-muted)] w-6 tabular-nums">
+                        #{index + 1}
+                      </span>
+                      <AppIconImage pkg={resolveTaskPkg(task)} size="sm" />
+                      <div className="min-w-0">
+                        <div className="text-xs font-semibold text-[var(--text-primary)] truncate">
+                          {task.packageName}{' '}
+                          <span className="text-[var(--text-muted)] font-mono text-[11px] uppercase font-normal">
+                            · {task.action}
+                          </span>
+                        </div>
+                        <div className="text-[11px] font-mono text-[var(--text-muted)] truncate">
+                          {task.packageId} · v{task.targetVersion || task.version}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <StatusBadge status="queued" compact />
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        aria-label={`Cancel queued ${task.packageName}`}
+                        onClick={() => onCancelTask(task.id)}
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+                ))}
               </div>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => onOpenTerminalForTask(activeTask)}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-neutral-200 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg transition-colors"
-              >
-                <Terminal className="w-3.5 h-3.5 text-sky-400" />
-                <span>View Console</span>
-              </button>
-
-              <button
-                onClick={() => onCancelTask(activeTask.id)}
-                className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-red-300 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 rounded-lg transition-colors"
-              >
-                <X className="w-3.5 h-3.5 text-red-400" />
-                <span>Cancel</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Progress bar */}
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between text-xs font-mono text-neutral-400">
-              <span className="capitalize">{activeTask.status}...</span>
-              <span className="tabular-nums">
-                {activeTask.progress}% {activeTask.downloadSpeed ? `(@ ${activeTask.downloadSpeed})` : ''}
-              </span>
-            </div>
-            <div className="w-full h-2 rounded-full bg-neutral-800 overflow-hidden">
-              <div
-                className="h-full bg-sky-400 transition-all duration-300 rounded-full"
-                style={{ width: `${Math.max(activeTask.progress, 5)}%` }}
-              />
-            </div>
-          </div>
+            ) : (
+              runningTasks.length === 0 && (
+                <EmptyState
+                  compact
+                  icon={<Activity className="w-5 h-5" />}
+                  title="No Active or Queued Operations"
+                  description="Installations, upgrades, and uninstalls queued from AppHub will display live progress here."
+                />
+              )
+            )}
+          </section>
         </div>
       )}
 
-      {/* Queued Tasks (Waiting) */}
-      <section className="space-y-3">
-        <h2 className="text-sm font-semibold text-neutral-200 flex items-center gap-2">
-          <Clock className="w-4 h-4 text-neutral-400" />
-          <span>Pending in Queue ({queue.length})</span>
-        </h2>
+      {/* Past Operations */}
+      {showHistorySection && (
+        <section className="space-y-3">
+          <h2 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+            Operation History ({visibleHistory.length})
+          </h2>
 
-        {queue.length > 0 ? (
-          <div className="rounded-xl border border-neutral-800 divide-y divide-neutral-800 bg-neutral-950/40">
-            {queue.map((task, index) => (
-              <div
-                key={task.id}
-                className="p-3.5 flex items-center justify-between gap-4 hover:bg-neutral-900/40 transition-colors"
-              >
-                <div className="flex items-center gap-3">
-                  <span className="text-xs font-mono text-neutral-500 w-5">#{index + 1}</span>
-                  <div>
-                    <div className="text-xs font-medium text-neutral-200">
-                      {task.packageName} <span className="text-neutral-500 font-mono text-[11px] uppercase">({task.action})</span>
-                    </div>
-                    <div className="text-[11px] font-mono text-neutral-400">
-                      {task.packageId} · Target: v{task.targetVersion}
-                    </div>
-                  </div>
-                </div>
+          {visibleHistory.length > 0 ? (
+            <div className="rounded-[12px] border border-[var(--border-subtle)] divide-y divide-[var(--border-subtle)] bg-[var(--surface-panel)]">
+              {visibleHistory.map(task => {
+                const isFailed = task.status === 'failed';
+                const exitLabel = formatExitCode(task.exitCode);
+                const durationSec =
+                  task.endTime && task.startTime
+                    ? `${Math.max(1, Math.round((task.endTime - task.startTime) / 1000))}s`
+                    : null;
 
-                <div className="flex items-center gap-3">
-                  <span className="text-xs font-mono text-neutral-500">Queued</span>
-                  <button
-                    onClick={() => onCancelTask(task.id)}
-                    className="p-1 text-neutral-500 hover:text-red-400 rounded transition-colors"
-                    title="Remove from queue"
+                const statusKind =
+                  task.status === 'completed'
+                    ? 'completed'
+                    : task.status === 'cancelled'
+                    ? 'cancelled'
+                    : 'failed';
+
+                return (
+                  <div
+                    key={task.id}
+                    className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:bg-[var(--surface-hover)]/60 transition-colors"
                   >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="py-8 text-center text-xs text-neutral-400 border border-neutral-800/60 rounded-xl bg-neutral-900/20">
-            No pending installations in queue.
-          </div>
-        )}
-      </section>
+                    <div className="flex items-start sm:items-center gap-3 min-w-0">
+                      <AppIconImage pkg={resolveTaskPkg(task)} size="sm" />
 
-      {/* Installation History */}
-      <section className="space-y-3">
-        <h2 className="text-sm font-semibold text-neutral-200 flex items-center gap-2">
-          <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-          <span>Completed & Past Operations ({historyTasks.length})</span>
-        </h2>
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-xs font-semibold text-[var(--text-primary)] truncate">
+                            {task.packageName}
+                          </span>
+                          <span className="text-[11px] font-mono uppercase text-[var(--text-muted)]">
+                            {task.action}
+                          </span>
+                          <StatusBadge status={statusKind} compact />
+                          {exitLabel && (
+                            <span className="text-[11px] font-mono text-[var(--text-muted)] tabular-nums">
+                              {exitLabel}
+                            </span>
+                          )}
+                        </div>
 
-        {historyTasks.length > 0 ? (
-          <div className="rounded-xl border border-neutral-800 divide-y divide-neutral-800 bg-neutral-950/40">
-            {historyTasks.map(task => {
-              const isSuccess = task.status === 'completed';
-              const isCancelled = task.status === 'cancelled';
-              const isFailed = task.status === 'failed';
+                        <div className="text-[11px] font-mono text-[var(--text-secondary)] flex flex-wrap items-center gap-1.5 mt-1">
+                          <span>{task.packageId}</span>
+                          <span className="text-[var(--text-muted)]">·</span>
+                          <span className="tabular-nums">
+                            {new Date(task.startTime).toLocaleTimeString()}
+                          </span>
+                          {durationSec && (
+                            <>
+                              <span className="text-[var(--text-muted)]">·</span>
+                              <span className="tabular-nums">{durationSec}</span>
+                            </>
+                          )}
+                        </div>
 
-              return (
-                <div
-                  key={task.id}
-                  className="p-3.5 flex items-center justify-between gap-4 hover:bg-neutral-900/40 transition-colors"
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0">
-                      {isSuccess ? (
-                        <CheckCircle2 className="w-5 h-5 text-emerald-400" />
-                      ) : isCancelled ? (
-                        <AlertTriangle className="w-5 h-5 text-amber-400" />
-                      ) : (
-                        <XCircle className="w-5 h-5 text-red-400" />
-                      )}
-                    </div>
-
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-medium text-neutral-200 truncate">
-                          {task.packageName}
-                        </span>
-                        <span className="text-[10px] font-mono uppercase text-neutral-500">
-                          [{task.action}]
-                        </span>
-                      </div>
-                      <div className="text-[11px] font-mono text-neutral-400 flex items-center gap-2 mt-0.5 truncate">
-                        <span>{task.packageId}</span>
-                        <span className="text-neutral-600">·</span>
-                        <span>{new Date(task.startTime).toLocaleTimeString()}</span>
                         {task.error && (
-                          <>
-                            <span className="text-neutral-600">·</span>
-                            <span className="text-red-400 truncate">{task.error}</span>
-                          </>
+                          <p className="text-xs text-[var(--status-danger-fg)] mt-1 break-words">
+                            {task.error}
+                          </p>
                         )}
                       </div>
                     </div>
-                  </div>
 
-                  <div className="flex items-center gap-2 shrink-0">
-                    <button
-                      onClick={() => onOpenTerminalForTask(task)}
-                      title="Inspect WinGet Process Logs"
-                      className="flex items-center gap-1 px-2.5 py-1 text-xs font-mono text-neutral-300 hover:text-white bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 rounded transition-colors"
-                    >
-                      <Terminal className="w-3.5 h-3.5" />
-                      <span>Logs</span>
-                    </button>
-
-                    {isFailed && (
-                      <button
-                        onClick={() => onRetryTask(task.id)}
-                        className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-sky-400 hover:text-sky-300 bg-sky-950/40 border border-sky-800/40 rounded transition-colors"
+                    <div className="flex items-center gap-2 shrink-0">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        leftIcon={<Terminal className="w-3.5 h-3.5 text-[var(--accent-primary)]" />}
+                        onClick={() => onOpenTerminalForTask(task)}
                       >
-                        <RotateCw className="w-3.5 h-3.5" />
-                        <span>Retry</span>
-                      </button>
-                    )}
+                        Inspect Logs
+                      </Button>
+
+                      {isFailed && (
+                        <Button
+                          size="sm"
+                          variant="primary"
+                          leftIcon={<RotateCw className="w-3.5 h-3.5" />}
+                          onClick={() => onRetryTask(task.id)}
+                        >
+                          Retry
+                        </Button>
+                      )}
+                    </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="py-8 text-center text-xs text-neutral-400 border border-neutral-800/60 rounded-xl bg-neutral-900/20">
-            No installation history recorded yet.
-          </div>
-        )}
-      </section>
+                );
+              })}
+            </div>
+          ) : (
+            <EmptyState
+              compact
+              icon={<Clock className="w-5 h-5" />}
+              title="No Recorded Operations"
+              description={
+                filter === 'all'
+                  ? 'Completed, failed, and cancelled WinGet operations will appear here.'
+                  : `No ${filter} operations in your history.`
+              }
+            />
+          )}
+        </section>
+      )}
+
+      <ConfirmationDialog
+        isOpen={confirmClearOpen}
+        onCancel={() => setConfirmClearOpen(false)}
+        onConfirm={() => {
+          onClearHistory();
+          setConfirmClearOpen(false);
+        }}
+        title="Clear Operation History"
+        description="Remove all completed, failed, and cancelled task records from local SQLite storage."
+        confirmLabel="Clear History"
+        tone="danger"
+      />
     </div>
   );
 };

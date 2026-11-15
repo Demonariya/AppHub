@@ -1,6 +1,6 @@
 export type Architecture = 'x64' | 'x86' | 'arm64' | 'neutral';
 
-export type PackageSourceType = 'winget' | 'msstore' | 'custom';
+export type PackageSourceType = 'winget' | 'msstore' | 'custom' | 'external';
 
 export type CategoryType =
   | 'Browsers'
@@ -19,6 +19,7 @@ export interface Package {
   id: string;
   name: string;
   publisher: string;
+  author?: string;
   version: string;
   latestVersion: string;
   description: string;
@@ -28,6 +29,7 @@ export interface Package {
   source: PackageSourceType;
   architectures: Architecture[];
   license: string;
+  licenseUrl?: string;
   homepage: string;
   publisherUrl?: string;
   icon?: string;
@@ -38,15 +40,18 @@ export interface Package {
   installedSizeBytes?: number;
   formattedInstalledSize?: string;
   requiredStorageDisk?: string;
-  rating: number;
-  ratingCount: number;
+  rating?: number;
+  ratingCount?: number;
   releaseDate: string;
+  releaseNotes?: string;
   dependencies?: string[];
-  installerType?: 'nullsoft' | 'inno' | 'msi' | 'wix' | 'msix' | 'zip' | 'exe' | 'portable';
+  installerType?: 'nullsoft' | 'inno' | 'msi' | 'wix' | 'msix' | 'zip' | 'exe' | 'portable' | string;
+  installerUrl?: string;
   verified: boolean;
   sha256?: string;
   isInstalled?: boolean;
   installedVersion?: string;
+  isExternal?: boolean;
   isPinned?: boolean;
   pinnedVersion?: string;
   isExcludedFromUpdates?: boolean;
@@ -94,8 +99,10 @@ export interface InstallationTask {
   targetVersion?: string;
   status: TaskStatus;
   progress: number; // 0 to 100
+  isIndeterminate?: boolean;
   downloadSpeed?: string;
   error?: string;
+  exitCode?: number;
   startTime: number;
   endTime?: number;
   logs: TaskLogEntry[];
@@ -114,10 +121,9 @@ export interface PackageSource {
   name: string;
   arg: string;
   type: PackageSourceType;
-  enabled: boolean;
   isOfficial: boolean;
-  lastUpdated: string;
-  packageCount: number;
+  lastUpdated?: string;
+  packageCount?: number;
   trustLevel: 'verified' | 'community' | 'untrusted';
 }
 
@@ -144,7 +150,6 @@ export interface AppSettings {
   startWithWindows: boolean;
   wingetPath: string;
   activeSource: string;
-  telemetryDisabled: boolean;
   maxConcurrentDownloads: number;
   logRetentionDays: number;
   defaultCustomLocation?: string;
@@ -160,6 +165,7 @@ export interface WinGetEnvironment {
   windowsVersion: string;
   architecture: Architecture;
   adminPrivileges: boolean;
+  error?: string;
 }
 
 export interface SearchFilters {
@@ -168,7 +174,7 @@ export interface SearchFilters {
   source: PackageSourceType | 'all';
   architecture: Architecture | 'all';
   installationStatus: 'all' | 'installed' | 'available' | 'updates';
-  sortBy: 'relevance' | 'name' | 'rating' | 'releaseDate';
+  sortBy: 'relevance' | 'name' | 'releaseDate';
   sortOrder: 'asc' | 'desc';
 }
 

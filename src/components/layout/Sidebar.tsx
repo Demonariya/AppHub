@@ -2,14 +2,13 @@ import React from 'react';
 import {
   Home,
   Compass,
-  Grid,
+  LayoutGrid,
   CheckSquare,
   ArrowUpCircle,
-  Download,
+  Activity,
   Bookmark,
   Database,
   Settings,
-  ShieldCheck,
   ChevronLeft,
   ChevronRight,
   X,
@@ -37,6 +36,19 @@ interface SidebarProps {
   onCloseMobile?: () => void;
 }
 
+interface NavItem {
+  id: PageId;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  badge?: number;
+  badgeTone?: 'warning' | 'accent';
+}
+
+interface NavGroup {
+  label: string;
+  items: NavItem[];
+}
+
 export const Sidebar: React.FC<SidebarProps> = ({
   currentPage,
   onSelectPage,
@@ -47,141 +59,177 @@ export const Sidebar: React.FC<SidebarProps> = ({
   isOpenOnMobile = false,
   onCloseMobile,
 }) => {
-  const navItems = [
-    { id: 'home' as PageId, label: 'Home', icon: Home },
-    { id: 'discover' as PageId, label: 'Discover', icon: Compass },
-    { id: 'categories' as PageId, label: 'Categories', icon: Grid },
-    { id: 'installed' as PageId, label: 'Installed', icon: CheckSquare },
+  const navGroups: NavGroup[] = [
     {
-      id: 'updates' as PageId,
-      label: 'Updates',
-      icon: ArrowUpCircle,
-      badge: updatesCount > 0 ? updatesCount : undefined,
-      badgeColor: 'text-amber-400 bg-amber-400/10 border-amber-400/20',
+      label: 'Discover',
+      items: [
+        { id: 'home', label: 'Home', icon: Home },
+        { id: 'discover', label: 'Explore', icon: Compass },
+        { id: 'categories', label: 'Categories', icon: LayoutGrid },
+      ],
     },
     {
-      id: 'downloads' as PageId,
-      label: 'Downloads',
-      icon: Download,
-      badge: activeDownloadsCount > 0 ? activeDownloadsCount : undefined,
-      badgeColor: 'text-sky-400 bg-sky-400/10 border-sky-400/20',
+      label: 'My Apps',
+      items: [
+        { id: 'installed', label: 'Installed', icon: CheckSquare },
+        {
+          id: 'updates',
+          label: 'Updates',
+          icon: ArrowUpCircle,
+          badge: updatesCount > 0 ? updatesCount : undefined,
+          badgeTone: 'warning',
+        },
+        { id: 'library', label: 'Library', icon: Bookmark },
+      ],
     },
-    { id: 'library' as PageId, label: 'Library', icon: Bookmark },
-    { id: 'sources' as PageId, label: 'Package Sources', icon: Database },
-    { id: 'settings' as PageId, label: 'Settings', icon: Settings },
+    {
+      label: 'Activity',
+      items: [
+        {
+          id: 'downloads',
+          label: 'Operations',
+          icon: Activity,
+          badge: activeDownloadsCount > 0 ? activeDownloadsCount : undefined,
+          badgeTone: 'accent',
+        },
+      ],
+    },
+    {
+      label: 'System',
+      items: [
+        { id: 'sources', label: 'Package Sources', icon: Database },
+        { id: 'settings', label: 'Settings', icon: Settings },
+      ],
+    },
   ];
 
   const handleItemClick = (id: PageId) => {
     onSelectPage(id);
-    if (onCloseMobile) onCloseMobile();
+    onCloseMobile?.();
   };
 
   const navContent = (
     <div className="flex flex-col justify-between h-full">
-      {/* Navigation list */}
-      <div className="p-2 space-y-1">
-        <div className="flex items-center justify-between px-3 py-2 text-[11px] font-semibold tracking-wider uppercase text-neutral-300">
-          <span>{isCompact ? '•••' : 'Store Navigation'}</span>
-          {onCloseMobile && (
+      <nav aria-label="Primary Navigation" className="p-2.5 space-y-4 overflow-y-auto">
+        {onCloseMobile && (
+          <div className="md:hidden flex items-center justify-between px-2 py-1">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+              Navigation
+            </span>
             <button
+              type="button"
               onClick={onCloseMobile}
-              className="md:hidden p-1 text-neutral-400 hover:text-white"
+              aria-label="Close navigation menu"
+              className="p-1 rounded text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
             >
               <X className="w-4 h-4" />
             </button>
-          )}
-        </div>
-
-        {navItems.map(item => {
-          const Icon = item.icon;
-          const isActive = currentPage === item.id;
-          return (
-            <button
-              key={item.id}
-              onClick={() => handleItemClick(item.id)}
-              title={isCompact ? item.label : undefined}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-xs font-medium transition-colors text-left relative ${
-                isActive
-                  ? 'bg-neutral-800 text-neutral-100 font-semibold'
-                  : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900/80'
-              }`}
-            >
-              {isActive && (
-                <div className="absolute left-0 top-1.5 bottom-1.5 w-0.5 bg-sky-400 rounded-r" />
-              )}
-              <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-sky-400' : 'text-neutral-400'}`} />
-
-              {(!isCompact || isOpenOnMobile) && (
-                <span className="truncate flex-1">{item.label}</span>
-              )}
-
-              {item.badge !== undefined && (
-                <span
-                  className={`text-[10px] font-mono font-semibold px-1.5 py-0.2 rounded border ${item.badgeColor} ${
-                    isCompact && !isOpenOnMobile ? 'absolute top-1 right-1' : ''
-                  }`}
-                >
-                  {item.badge}
-                </span>
-              )}
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Footer / Toggle & Status */}
-      <div className="p-3 border-t border-neutral-800/60 space-y-2">
-        {(!isCompact || isOpenOnMobile) && (
-          <div className="px-2 py-2 rounded bg-neutral-900/50 border border-neutral-800/60 text-[11px] text-neutral-400 space-y-1">
-            <div className="flex items-center gap-1.5 text-neutral-300 font-medium">
-              <ShieldCheck className="w-3.5 h-3.5 text-sky-400" />
-              <span>WinGet Official</span>
-            </div>
-            <div className="text-[10px] text-neutral-300">
-              Microsoft WinGet community repository verified.
-            </div>
           </div>
         )}
 
-        {onToggleCompact && (
+        {navGroups.map((group, gIdx) => (
+          <div key={group.label} className={gIdx > 0 ? 'pt-1' : ''}>
+            {(!isCompact || isOpenOnMobile) ? (
+              <div className="px-2.5 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                {group.label}
+              </div>
+            ) : (
+              gIdx > 0 && <div className="mx-2 my-2 border-t border-[var(--border-subtle)]" />
+            )}
+
+            <div className="space-y-0.5">
+              {group.items.map(item => {
+                const Icon = item.icon;
+                const isActive = currentPage === item.id;
+                const badgeClass =
+                  item.badgeTone === 'warning'
+                    ? 'text-[var(--status-warning-fg)] bg-[var(--status-warning-bg)] border-[var(--status-warning-border)]'
+                    : 'text-[var(--accent-primary)] bg-[var(--accent-soft)] border-[var(--accent-border)]';
+
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => handleItemClick(item.id)}
+                    aria-current={isActive ? 'page' : undefined}
+                    title={isCompact && !isOpenOnMobile ? item.label : undefined}
+                    className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-[8px] text-xs transition-colors text-left relative cursor-pointer ${
+                      isActive
+                        ? 'bg-[var(--surface-active)] text-[var(--text-primary)] font-semibold'
+                        : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)] font-medium'
+                    } ${isCompact && !isOpenOnMobile ? 'justify-center px-0' : ''}`}
+                  >
+                    {isActive && (
+                      <div className="absolute left-0 top-1.5 bottom-1.5 w-[3px] bg-[var(--accent-primary)] rounded-r" />
+                    )}
+                    <Icon
+                      className={`w-4 h-4 shrink-0 ${
+                        isActive ? 'text-[var(--accent-primary)]' : 'text-[var(--text-muted)]'
+                      }`}
+                    />
+
+                    {(!isCompact || isOpenOnMobile) && (
+                      <span className="truncate flex-1">{item.label}</span>
+                    )}
+
+                    {item.badge !== undefined && (
+                      <span
+                        className={`text-[10px] font-mono font-semibold tabular-nums px-1.5 py-0.5 rounded-[5px] border leading-none ${badgeClass} ${
+                          isCompact && !isOpenOnMobile ? 'absolute top-1 right-1 px-1' : ''
+                        }`}
+                      >
+                        {item.badge}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </nav>
+
+      {/* Collapse Toggle Footer */}
+      {onToggleCompact && (
+        <div className="p-2.5 border-t border-[var(--border-subtle)] hidden md:block">
           <button
+            type="button"
             onClick={onToggleCompact}
+            aria-label={isCompact ? 'Expand sidebar' : 'Collapse sidebar'}
             title={isCompact ? 'Expand sidebar' : 'Collapse sidebar'}
-            className="hidden md:flex w-full items-center justify-center gap-2 p-1.5 rounded hover:bg-neutral-900 text-neutral-400 hover:text-neutral-200 text-xs transition-colors"
+            className="w-full flex items-center justify-center gap-2 h-8 px-2 rounded-[8px] hover:bg-[var(--surface-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-xs transition-colors cursor-pointer"
           >
             {isCompact ? (
               <ChevronRight className="w-4 h-4" />
             ) : (
               <>
-                <ChevronLeft className="w-4 h-4" />
-                <span className="text-[11px]">Collapse View</span>
+                <ChevronLeft className="w-4 h-4 shrink-0" />
+                <span className="text-[11px] font-medium truncate">Collapse Sidebar</span>
               </>
             )}
           </button>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 
   return (
     <>
-      {/* Desktop Docked Sidebar */}
       <aside
-        className={`hidden md:flex h-[calc(100vh-2.25rem)] bg-neutral-950 border-r border-neutral-800/80 flex-col justify-between transition-all duration-200 select-none ${
+        className={`hidden md:flex h-[calc(100vh-2.25rem)] bg-[var(--surface-shell)] border-r border-[var(--border-subtle)] flex-col justify-between transition-all duration-200 select-none shrink-0 ${
           isCompact ? 'w-16' : 'w-56'
         }`}
       >
         {navContent}
       </aside>
 
-      {/* Mobile Slide-in Drawer with Backdrop Overlay */}
       {isOpenOnMobile && (
         <div className="md:hidden fixed inset-0 z-50 flex">
           <div
-            className="fixed inset-0 bg-black/70 backdrop-blur-sm animate-in fade-in duration-150"
+            className="fixed inset-0 bg-[var(--surface-backdrop)] backdrop-blur-sm"
             onClick={onCloseMobile}
           />
-          <aside className="relative z-10 w-64 h-full bg-neutral-950 border-r border-neutral-800 shadow-2xl flex flex-col justify-between animate-in slide-in-from-left duration-200">
+          <aside className="relative z-10 w-64 h-full bg-[var(--surface-shell)] border-r border-[var(--border-strong)] shadow-[var(--shadow-dialog)] flex flex-col justify-between animate-page-in">
             {navContent}
           </aside>
         </div>

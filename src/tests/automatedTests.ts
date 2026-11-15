@@ -1,5 +1,5 @@
 import { wingetEngine } from '../services/wingetEngine';
-import { storage } from '../services/storage';
+import { DEFAULT_SOURCES, storage } from '../services/storage';
 import { installationQueue } from '../services/installationQueue';
 import { INITIAL_PACKAGES } from '../services/catalog';
 import { Package } from '../types';
@@ -37,25 +37,30 @@ export async function runAllAutomatedTests(): Promise<TestResult[]> {
     }
   };
 
-  // Suite 1: WinGet Detection & Environment
-  await runTest('WinGet Environment', 'Detects valid WinGet CLI environment', () => {
+  // Suite 1: WinGet Detection & Environment (Honest Non-Tauri State)
+  await runTest('WinGet Environment', 'Reports honest environment status without fake CLI version', () => {
     const env = wingetEngine.getEnvironment();
-    if (!env.isInstalled || !env.version.startsWith('v')) {
-      throw new Error(`Expected valid installed WinGet version, got ${env.version}`);
+    if (!env.architecture || !env.locale) {
+      throw new Error('Environment object missing architecture or locale metadata');
     }
-    if (!env.path.includes('winget.exe')) {
-      throw new Error(`Expected binary path containing winget.exe`);
+    if (env.isInstalled && !env.version.startsWith('v')) {
+      throw new Error(`Installed WinGet must expose version string, got ${env.version}`);
+    }
+    if (!env.isInstalled && env.version === 'v1.9.25200') {
+      throw new Error('Detected forbidden fabricated fallback WinGet version v1.9.25200');
     }
   });
 
   // Suite 2: Command Argument Validation & Security
-  await runTest('Security & Validation', 'Validates legitimate package IDs', () => {
+  await runTest('Security & Validation', 'Validates legitimate package IDs including plus signs', () => {
     const valid = [
       'Microsoft.VisualStudioCode',
       'Git.Git',
       'Mozilla.Firefox',
       'Valve.Steam',
       '7zip.7zip',
+      'Notepad++.Notepad++',
+      'OpenJS.NodeJS.LTS',
     ];
     for (const id of valid) {
       if (!wingetEngine.isValidPackageId(id)) {
@@ -98,8 +103,9 @@ export async function runAllAutomatedTests(): Promise<TestResult[]> {
     }
   });
 
-  // Suite 4: Persistence & Storage
-  await runTest('Storage & Persistence', 'Loads default package catalog across all 11 categories', () => {
+  // Suite 4: Persistence, Integrity & Zero Fake Data
+  await runTest('Storage & Persistence', 'Loads curated catalog across categories with zero fake metrics', () => {
+    storage.resetAllToDefaults();
     const pkgs = storage.getPackages();
     if (pkgs.length < 10) {
       throw new Error(`Expected extensive package catalog, found ${pkgs.length}`);
@@ -108,14 +114,100 @@ export async function runAllAutomatedTests(): Promise<TestResult[]> {
     if (!categories.has('Browsers') || !categories.has('Development') || !categories.has('Gaming')) {
       throw new Error('Missing core categories in stored package dataset');
     }
+    for (const p of INITIAL_PACKAGES) {
+      if (p.isInstalled) {
+        throw new Error(`Catalog package ${p.id} must not hardcode isInstalled: true`);
+      }
+      if (p.ratingCount !== undefined || p.rating !== undefined) {
+        throw new Error(`Catalog package ${p.id} still carries fake rating fields`);
+      }
+      if (p.formattedSize === '45 MB' || p.formattedInstalledSize === '~150 MB') {
+        throw new Error(`Catalog package ${p.id} still carries hardcoded placeholder size`);
+      }
+    }
+    if (DEFAULT_SOURCES.some(s => s.arg.includes('apphub.internal'))) {
+      throw new Error('DEFAULT_SOURCES still contains fake apphub.internal source');
+    }
   });
 
-  await runTest('Storage & Persistence', 'Generates valid WinGet JSON Export Manifest', () => {
-    const manifestJson = storage.exportWinGetManifest();
+  await runTest('Storage & Persistence', 'Persists favorites, settings, and external WinGet reconciliation', () => {
+    storage.resetAllToDefaults();
+    const updatedSettings = storage.saveSettings({
+      maxConcurrentDownloads: 3,
+      density: 'compact',
+      theme: 'system',
+      wingetPath: 'C:\\Tools\\winget.exe',
+    });
+    if (
+      updatedSettings.maxConcurrentDownloads !== 3 ||
+      updatedSettings.density !== 'compact' ||
+      updatedSettings.theme !== 'system' ||
+      updatedSettings.wingetPath !== 'C:\\Tools\\winget.exe'
+    ) {
+      throw new Error('Settings persistence failed for newly wired fields');
+    }
+
+    const withFav = storage.setFavorite('Git.Git', true);
+    if (!withFav.find(p => p.id === 'Git.Git')?.isFavorite || !storage.getFavoriteIds().includes('Git.Git')) {
+      throw new Error('Favorite persistence failed');
+    }
+
+    const merged = storage.mergeRealSystemState(
+      [
+        {
+          id: 'Git.Git',
+          name: 'Git',
+          version: '2.46.0',
+          source: 'winget',
+          isWingetManaged: true,
+        },
+        {
+          id: 'ARP\\Machine\\X64\\CustomVendorApp',
+          name: 'Custom Vendor App',
+          version: '1.0.0',
+          isWingetManaged: false,
+        },
+      ],
+      [
+        {
+          id: 'Git.Git',
+          name: 'Git',
+          installedVersion: '2.46.0',
+          availableVersion: '2.47.1',
+          source: 'winget',
+        },
+      ]
+    );
+
+    const git = merged.find(p => p.id === 'Git.Git');
+    const external = merged.find(p => p.id === 'ARP\\Machine\\X64\\CustomVendorApp');
+    if (!git?.isInstalled || git.installedVersion !== '2.46.0' || git.latestVersion !== '2.47.1') {
+      throw new Error('WinGet reconciliation failed to preserve installed/upgrade version pair');
+    }
+    if (!external?.isInstalled || !external.isExternal || external.source !== 'external') {
+      throw new Error('External Windows application classification failed during reconciliation');
+    }
+    storage.resetAllToDefaults();
+  });
+
+  await runTest('Storage & Persistence', 'Generates valid WinGet JSON Export Manifest excluding external apps', () => {
+    storage.mergeRealSystemState(
+      [
+        { id: 'Git.Git', name: 'Git', version: '2.47.1', source: 'winget', isWingetManaged: true },
+        { id: 'ARP\\Machine\\LocalOnly', name: 'LocalOnly', version: '1.0', isWingetManaged: false },
+      ],
+      []
+    );
+    const manifestJson = storage.exportWinGetManifest('1.9.25200');
     const parsed = JSON.parse(manifestJson);
     if (!parsed.$schema || !parsed.Sources || !Array.isArray(parsed.Sources)) {
       throw new Error('Exported manifest violates Microsoft WinGet schema structure');
     }
+    const exportedIds = parsed.Sources[0].Packages.map((p: any) => p.PackageIdentifier);
+    if (!exportedIds.includes('Git.Git') || exportedIds.includes('ARP\\Machine\\LocalOnly')) {
+      throw new Error(`Export manifest improperly filtered packages: ${JSON.stringify(exportedIds)}`);
+    }
+    storage.resetAllToDefaults();
   });
 
   await runTest('Storage & Persistence', 'Imports WinGet JSON Manifest successfully', () => {
@@ -138,40 +230,44 @@ export async function runAllAutomatedTests(): Promise<TestResult[]> {
     }
   });
 
-  // Suite 5: Update Detection & Pinning
-  await runTest('Update Management', 'Detects available updates accurately', () => {
-    const pkgs = storage.getPackages();
-    const updateAvailable = pkgs.filter(
-      p => p.isInstalled && p.installedVersion && p.installedVersion !== p.latestVersion
-    );
-    if (updateAvailable.length === 0) {
-      throw new Error('Expected sample outdated packages for update verification');
-    }
-  });
-
-  // Suite 6: Sequential Installation Queue
-  await runTest('Installation Queue', 'Enqueues and processes task with status lifecycle', async () => {
+  // Suite 5: Installation Queue & Honest Non-Tauri Failure
+  await runTest('Installation Queue', 'Prevents duplicate operations and fails honestly outside desktop runtime', async () => {
     const sample = INITIAL_PACKAGES.find(p => p.id === '7zip.7zip') || INITIAL_PACKAGES[0];
-    const task = installationQueue.enqueue(sample, 'install', { silent: true });
-    if (!task.id || task.packageId !== sample.id) {
-      throw new Error('Task enqueuing returned invalid task metadata');
+    const task1 = installationQueue.enqueue(sample, 'install', { silent: true, targetVersion: '24.08' });
+    const task2 = installationQueue.enqueue(sample, 'install', { silent: true });
+
+    if (task1.id !== task2.id) {
+      throw new Error('Expected duplicate enqueue for same package to return existing task');
     }
+    if (task1.targetVersion !== '24.08') {
+      throw new Error(`Expected targetVersion 24.08 on task, got ${task1.targetVersion}`);
+    }
+
+    // Wait a tick for async non-Tauri rejection completion
+    await new Promise(resolve => setTimeout(resolve, 30));
+    const history = storage.getHistoryTasks();
+    const recorded = history.find(t => t.id === task1.id);
+    if (!recorded || recorded.status !== 'failed') {
+      throw new Error(`Expected honest failure in non-Tauri environment, got status=${recorded?.status}`);
+    }
+    storage.resetAllToDefaults();
   });
 
-  // Suite 7: Version Timeline & Rollback
-  await runTest('Version Timeline & Rollback', 'Fetches chronological release versions for packages', async () => {
-    const sample = INITIAL_PACKAGES.find(p => p.id === 'Microsoft.VisualStudioCode')!;
+  // Suite 6: Version Timeline & Rollback
+  await runTest('Version Timeline & Rollback', 'Returns catalog latest + installed version honestly and builds rollback args', async () => {
+    const sample: Package = {
+      ...INITIAL_PACKAGES.find(p => p.id === 'Microsoft.VisualStudioCode')!,
+      isInstalled: true,
+      installedVersion: '1.94.2',
+    };
     const versions = await wingetEngine.fetchPackageVersions(sample);
     if (!versions || versions.length < 2) {
-      throw new Error(`Expected multiple historical versions, found: ${versions?.length}`);
+      throw new Error(`Expected latest + installed versions, found: ${versions?.length}`);
     }
-    const hasLatest = versions.some(v => v.isLatest);
-    if (!hasLatest) {
-      throw new Error('Missing isLatest flag on newest version');
+    if (!versions.some(v => v.isLatest) || !versions.some(v => v.isCurrent && v.version === '1.94.2')) {
+      throw new Error('Missing expected latest or current installed version entry');
     }
-  });
 
-  await runTest('Version Timeline & Rollback', 'Builds safe rollback install arguments with --force', () => {
     const rollbackArgs = wingetEngine.buildInstallArgs('Microsoft.VisualStudioCode', {
       version: '1.94.2',
       force: true,
@@ -182,14 +278,13 @@ export async function runAllAutomatedTests(): Promise<TestResult[]> {
     }
   });
 
-  // Suite 8: Real App Icons & Hierarchy
+  // Suite 7: Real App Icons & Hierarchy
   await runTest('Real App Icons', 'Resolves authentic CDN and official vector assets', () => {
     const sample = INITIAL_PACKAGES.find(p => p.id === 'Mozilla.Firefox')!;
     const iconUrl = getAppIconUrl(sample);
     if (!iconUrl || (!iconUrl.startsWith('http') && !iconUrl.startsWith('data:image/'))) {
       throw new Error(`Invalid fetched icon URL: ${iconUrl}`);
     }
-    // Verify none of the initial packages use dead github paths or leaked generic microsoft favicons
     for (const pkg of INITIAL_PACKAGES) {
       const u = getAppIconUrl(pkg);
       if (u.includes('raw.githubusercontent.com/microsoft/winget-pkgs')) {
@@ -205,7 +300,7 @@ export async function runAllAutomatedTests(): Promise<TestResult[]> {
     }
   });
 
-  // Suite 9: Custom Path Installation
+  // Suite 8: Custom Path Installation
   await runTest('Custom Path Installation', 'Builds safe argument vectors with --location', () => {
     const customPath = 'D:\\Software\\VSCode';
     const args = wingetEngine.buildInstallArgs('Microsoft.VisualStudioCode', {
@@ -221,7 +316,7 @@ export async function runAllAutomatedTests(): Promise<TestResult[]> {
     }
   });
 
-  // Suite 10: VS Code Official Blue Brand Guarantee
+  // Suite 9: VS Code Official Blue Brand Guarantee
   await runTest('Icon Architecture', 'VS Code resolves strictly to official stable blue logo', async () => {
     const { resolveAppIcon, getIconRecord } = await import('../services/icons');
     const vscode = INITIAL_PACKAGES.find(p => p.id === 'Microsoft.VisualStudioCode')!;
@@ -233,24 +328,21 @@ export async function runAllAutomatedTests(): Promise<TestResult[]> {
     if (!resolved.src.startsWith('data:image/svg+xml')) {
       throw new Error(`VS Code icon must be inline SVG data URI, got: ${resolved.src.slice(0, 50)}`);
     }
-    // Must contain official Microsoft Blue hex colors
     const decoded = decodeURIComponent(resolved.src);
     if (!decoded.includes('#007ACC') && !decoded.includes('#0065A9')) {
       throw new Error('VS Code SVG is missing official blue brand color values');
     }
-    // Must NOT contain green Insiders or orange Exploration colors
     if (decoded.includes('#238636') || decoded.includes('#D97706')) {
       throw new Error('VS Code SVG contains non-stable branch colors (green or orange)');
     }
 
-    // Case-insensitivity test
     const lowerRecord = getIconRecord('microsoft.visualstudiocode');
     if (!lowerRecord || lowerRecord.packageId !== 'Microsoft.VisualStudioCode') {
       throw new Error('Case-insensitive lookup failed for microsoft.visualstudiocode');
     }
   });
 
-  // Suite 11: Icon Cache Isolation & Invalidation
+  // Suite 10: Icon Cache Isolation & Invalidation
   await runTest('Icon Architecture', 'Cache isolates entries and honors invalidation', async () => {
     const { resolveAppIcon, getCachedIcon, invalidateIconCache } = await import('../services/icons');
     const pkg: Package = {
@@ -266,19 +358,16 @@ export async function runAllAutomatedTests(): Promise<TestResult[]> {
       architectures: ['x64'],
       license: 'MIT',
       homepage: 'https://testapp.org',
-      rating: 5,
-      ratingCount: 1,
       releaseDate: '2024-01-01',
       verified: true,
     };
 
-    const first = resolveAppIcon(pkg);
+    resolveAppIcon(pkg);
     const cached = getCachedIcon('Test.App.Cache');
     if (!cached || !cached.diagnostic.cacheHit) {
       throw new Error('Expected icon to be cached with cacheHit flag');
     }
 
-    // Invalidation
     invalidateIconCache('Test.App.Cache');
     const afterInvalidation = getCachedIcon('Test.App.Cache');
     if (afterInvalidation) {
@@ -286,7 +375,7 @@ export async function runAllAutomatedTests(): Promise<TestResult[]> {
     }
   });
 
-  // Suite 12: Icon Validator & Malformed Input Handling
+  // Suite 11: Icon Validator & Malformed Input Handling
   await runTest('Icon Architecture', 'Rejects dead repos and malformed URLs', async () => {
     const { isValidIconUrl, isGenericFaviconLeak } = await import('../services/icons');
     if (isValidIconUrl('https://raw.githubusercontent.com/microsoft/winget-pkgs/icons/foo.png')) {
@@ -305,4 +394,3 @@ export async function runAllAutomatedTests(): Promise<TestResult[]> {
 
   return results;
 }
-

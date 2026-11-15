@@ -1,149 +1,222 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Package, TaskAction } from '../types';
 import { AppListItem } from '../components/common/AppListItem';
 import { AppCard } from '../components/common/AppCard';
+import { LayoutGrid, List, HardDrive, Share2, RefreshCw } from 'lucide-react';
 import {
-  CheckSquare,
-  Search,
-  Download,
-  Trash2,
-  RotateCw,
-  ExternalLink,
-  LayoutGrid,
-  List,
-  HardDrive,
-  Share2,
-} from 'lucide-react';
+  PageHeader,
+  SearchInput,
+  SegmentedTabs,
+  FilterSelect,
+  Button,
+  EmptyState,
+} from '../components/ui';
 
 interface InstalledPageProps {
   packages: Package[];
   onOpenDetails: (pkg: Package) => void;
   onActionClick: (pkg: Package, action: TaskAction) => void;
+  onToggleFavorite?: (pkg: Package) => void;
   onExportManifest: () => void;
+  onRefreshInstalled?: () => void;
+  isRefreshing?: boolean;
 }
 
 export const InstalledPage: React.FC<InstalledPageProps> = ({
   packages,
   onOpenDetails,
   onActionClick,
+  onToggleFavorite,
   onExportManifest,
+  onRefreshInstalled,
+  isRefreshing = false,
 }) => {
   const [query, setQuery] = useState('');
+  const [sourceFilter, setSourceFilter] = useState<'all' | 'winget' | 'external'>('all');
+  const [sortBy, setSortBy] = useState<'name' | 'source' | 'updates'>('name');
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
 
-  const installedPackages = packages.filter(p => p.isInstalled);
+  const installedPackages = useMemo(() => packages.filter(p => p.isInstalled), [packages]);
+  const wingetManagedCount = installedPackages.filter(p => !p.isExternal).length;
+  const externalCount = installedPackages.filter(p => p.isExternal).length;
+  const pendingUpdatesCount = installedPackages.filter(
+    p => !p.isExternal && p.installedVersion && p.installedVersion !== p.latestVersion
+  ).length;
 
-  const filtered = installedPackages.filter(p => {
-    if (!query.trim()) return true;
-    const q = query.toLowerCase().trim();
-    return (
-      p.name.toLowerCase().includes(q) ||
-      p.id.toLowerCase().includes(q) ||
-      p.publisher.toLowerCase().includes(q)
-    );
-  });
+  const filtered = useMemo(() => {
+    let list = installedPackages.filter(p => {
+      if (sourceFilter === 'winget' && p.isExternal) return false;
+      if (sourceFilter === 'external' && !p.isExternal) return false;
+      if (!query.trim()) return true;
+      const q = query.toLowerCase().trim();
+      return (
+        p.name.toLowerCase().includes(q) ||
+        p.id.toLowerCase().includes(q) ||
+        p.publisher.toLowerCase().includes(q)
+      );
+    });
 
-  const totalDownloadBytes = installedPackages.reduce((acc, p) => acc + (p.downloadSizeBytes || p.sizeBytes || 0), 0);
-  const totalDiskBytes = installedPackages.reduce((acc, p) => acc + (p.installedSizeBytes || Math.round((p.sizeBytes || 0) * 3.4)), 0);
-  const formattedDownloadSize = `${(totalDownloadBytes / 1073741824).toFixed(2)} GB`;
-  const formattedDiskSize = `${(totalDiskBytes / 1073741824).toFixed(2)} GB`;
+    list = [...list].sort((a, b) => {
+      if (sortBy === 'updates') {
+        const aUpd = a.installedVersion && a.installedVersion !== a.latestVersion ? 0 : 1;
+        const bUpd = b.installedVersion && b.installedVersion !== b.latestVersion ? 0 : 1;
+        if (aUpd !== bUpd) return aUpd - bUpd;
+      }
+      if (sortBy === 'source') {
+        const sCmp = (a.isExternal ? 'local' : a.source).localeCompare(
+          b.isExternal ? 'local' : b.source
+        );
+        if (sCmp !== 0) return sCmp;
+      }
+      return a.name.localeCompare(b.name);
+    });
+
+    return list;
+  }, [installedPackages, sourceFilter, query, sortBy]);
 
   return (
-    <div className="p-4 sm:p-8 max-w-7xl mx-auto space-y-6">
-      {/* Page Header */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-xl font-bold text-neutral-100">Installed Applications</h1>
-          <p className="text-xs text-neutral-400 mt-1">
-            Software registered on this system via WinGet and Windows Installer.
-          </p>
-        </div>
+    <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-6 animate-page-in">
+      <PageHeader
+        title="Installed Applications"
+        subtitle="Software detected on this Windows system via WinGet and local installer registries."
+        actions={
+          <>
+            {onRefreshInstalled && (
+              <Button
+                size="md"
+                variant="secondary"
+                onClick={onRefreshInstalled}
+                disabled={isRefreshing}
+                leftIcon={
+                  <RefreshCw
+                    className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-[var(--accent-primary)]' : ''}`}
+                  />
+                }
+              >
+                {isRefreshing ? 'Scanning System...' : 'Refresh Inventory'}
+              </Button>
+            )}
+            <Button
+              size="md"
+              variant="secondary"
+              onClick={onExportManifest}
+              disabled={wingetManagedCount === 0}
+              leftIcon={<Share2 className="w-3.5 h-3.5 text-[var(--accent-primary)]" />}
+            >
+              Export Manifest
+            </Button>
+          </>
+        }
+      />
 
-        <div className="flex items-center gap-2">
-          <button
-            onClick={onExportManifest}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-neutral-300 bg-neutral-900 border border-neutral-800 hover:border-neutral-700 hover:text-white rounded-lg transition-colors"
-          >
-            <Share2 className="w-3.5 h-3.5 text-sky-400" />
-            <span>Export Manifest (winget export)</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Summary KPI Strip */}
+      {/* Summary Strip */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
-        <div className="p-4 rounded-xl bg-neutral-900/60 border border-neutral-800 space-y-1">
-          <div className="text-xs text-neutral-400">Installed Packages</div>
-          <div className="text-lg sm:text-xl font-bold font-mono text-neutral-100 tabular-nums">
+        <div className="p-4 rounded-[12px] bg-[var(--surface-panel)] border border-[var(--border-subtle)] space-y-1">
+          <div className="text-xs text-[var(--text-secondary)]">Total Detected</div>
+          <div className="text-lg sm:text-xl font-bold font-mono text-[var(--text-primary)] tabular-nums">
             {installedPackages.length} apps
           </div>
         </div>
 
-        <div className="p-4 rounded-xl bg-neutral-900/60 border border-neutral-800 space-y-1">
-          <div className="text-xs text-neutral-400">Disk Space Occupied</div>
-          <div className="text-lg sm:text-xl font-bold font-mono text-sky-400 tabular-nums">
-            {formattedDiskSize}
+        <div className="p-4 rounded-[12px] bg-[var(--surface-panel)] border border-[var(--border-subtle)] space-y-1">
+          <div className="text-xs text-[var(--text-secondary)]">WinGet Managed</div>
+          <div className="text-lg sm:text-xl font-bold font-mono text-[var(--accent-primary)] tabular-nums">
+            {wingetManagedCount} apps
           </div>
         </div>
 
-        <div className="p-4 rounded-xl bg-neutral-900/60 border border-neutral-800 space-y-1">
-          <div className="text-xs text-neutral-400">Total Download Size</div>
-          <div className="text-lg sm:text-xl font-bold font-mono text-neutral-300 tabular-nums">
-            {formattedDownloadSize}
+        <div className="p-4 rounded-[12px] bg-[var(--surface-panel)] border border-[var(--border-subtle)] space-y-1">
+          <div className="text-xs text-[var(--text-secondary)]">External / Local</div>
+          <div className="text-lg sm:text-xl font-bold font-mono text-[var(--text-primary)] tabular-nums">
+            {externalCount} apps
           </div>
         </div>
 
-        <div className="p-4 rounded-xl bg-neutral-900/60 border border-neutral-800 space-y-1">
-          <div className="text-xs text-neutral-400">Pending Updates</div>
-          <div className="text-lg sm:text-xl font-bold font-mono text-amber-400 tabular-nums">
-            {installedPackages.filter(p => p.installedVersion && p.installedVersion !== p.latestVersion).length} available
+        <div className="p-4 rounded-[12px] bg-[var(--surface-panel)] border border-[var(--border-subtle)] space-y-1">
+          <div className="text-xs text-[var(--text-secondary)]">Pending Updates</div>
+          <div className="text-lg sm:text-xl font-bold font-mono text-[var(--status-warning-fg)] tabular-nums">
+            {pendingUpdatesCount} available
           </div>
         </div>
       </div>
 
-      {/* Search & View Controls */}
-      <div className="flex items-center justify-between gap-3">
-        <div className="relative flex-1 max-w-md">
-          <Search className="w-4 h-4 text-neutral-500 absolute left-3 top-1/2 -translate-y-1/2" />
-          <input
-            type="text"
+      {/* Controls */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-3 flex-1">
+          <SearchInput
             value={query}
-            onChange={e => setQuery(e.target.value)}
+            onChange={setQuery}
             placeholder="Search installed applications..."
-            className="w-full pl-9 pr-3 py-1.5 bg-neutral-900 border border-neutral-800 rounded-lg text-xs text-neutral-200 placeholder-neutral-500 focus:outline-none"
+            className="flex-1 min-w-[220px] max-w-md"
+          />
+
+          <SegmentedTabs
+            value={sourceFilter}
+            onChange={setSourceFilter}
+            ariaLabel="Filter installed software source"
+            options={[
+              { id: 'all', label: 'All', count: installedPackages.length },
+              { id: 'winget', label: 'WinGet', count: wingetManagedCount },
+              { id: 'external', label: 'External', count: externalCount },
+            ]}
           />
         </div>
 
-        <div className="flex items-center bg-neutral-900 border border-neutral-800 rounded-lg p-0.5">
-          <button
-            onClick={() => setViewMode('list')}
-            className={`p-1.5 rounded text-neutral-400 ${viewMode === 'list' ? 'bg-neutral-800 text-white' : ''}`}
-          >
-            <List className="w-4 h-4" />
-          </button>
-          <button
-            onClick={() => setViewMode('grid')}
-            className={`p-1.5 rounded text-neutral-400 ${viewMode === 'grid' ? 'bg-neutral-800 text-white' : ''}`}
-          >
-            <LayoutGrid className="w-4 h-4" />
-          </button>
+        <div className="flex items-center gap-2">
+          <FilterSelect
+            label="Sort"
+            value={sortBy}
+            onChange={v => setSortBy(v as 'name' | 'source' | 'updates')}
+            options={[
+              { value: 'name', label: 'Name (A–Z)' },
+              { value: 'updates', label: 'Updates First' },
+              { value: 'source', label: 'Source' },
+            ]}
+          />
+
+          <div className="flex items-center bg-[var(--surface-subtle)] border border-[var(--border-subtle)] rounded-[8px] p-0.5">
+            <button
+              type="button"
+              onClick={() => setViewMode('list')}
+              aria-label="List view"
+              aria-pressed={viewMode === 'list'}
+              className={`p-1.5 rounded-[6px] transition-colors cursor-pointer ${
+                viewMode === 'list'
+                  ? 'bg-[var(--surface-panel)] text-[var(--text-primary)] shadow-xs'
+                  : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
+              }`}
+            >
+              <List className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('grid')}
+              aria-label="Grid view"
+              aria-pressed={viewMode === 'grid'}
+              className={`p-1.5 rounded-[6px] transition-colors cursor-pointer ${
+                viewMode === 'grid'
+                  ? 'bg-[var(--surface-panel)] text-[var(--text-primary)] shadow-xs'
+                  : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
+              }`}
+            >
+              <LayoutGrid className="w-4 h-4" />
+            </button>
+          </div>
         </div>
       </div>
 
-      {/* Installed List */}
+      {/* Installed Content */}
       {filtered.length > 0 ? (
         viewMode === 'list' ? (
-          <div className="rounded-xl border border-neutral-800/80 overflow-hidden divide-y divide-neutral-800/60 bg-neutral-950/40">
-            {/* Table Header */}
-            <div className="hidden md:flex items-center justify-between gap-4 px-4 py-2 bg-neutral-900/80 text-[11px] font-semibold text-neutral-400 uppercase tracking-wider">
-              <span className="flex-1">Application Name & ID</span>
+          <div className="rounded-[12px] border border-[var(--border-subtle)] overflow-hidden divide-y divide-[var(--border-subtle)] bg-[var(--surface-panel)]">
+            <div className="hidden md:flex items-center justify-between gap-4 px-4 py-2.5 bg-[var(--surface-subtle)] text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider">
+              <span className="flex-1">Application Name &amp; ID</span>
               <div className="flex items-center gap-6 shrink-0 font-mono">
-                <span className="w-24">Category</span>
+                <span className="w-24">Source</span>
                 <span className="w-28 text-right">Installed</span>
                 <span className="w-28 text-right">Latest</span>
-                <span className="w-20 text-right">Size</span>
               </div>
-              <span className="w-28 text-right">Actions</span>
+              <span className="w-36 text-right">Actions</span>
             </div>
 
             {filtered.map(pkg => (
@@ -152,6 +225,7 @@ export const InstalledPage: React.FC<InstalledPageProps> = ({
                 pkg={pkg}
                 onOpenDetails={onOpenDetails}
                 onActionClick={onActionClick}
+                onToggleFavorite={onToggleFavorite}
               />
             ))}
           </div>
@@ -163,16 +237,39 @@ export const InstalledPage: React.FC<InstalledPageProps> = ({
                 pkg={pkg}
                 onOpenDetails={onOpenDetails}
                 onActionClick={onActionClick}
+                onToggleFavorite={onToggleFavorite}
               />
             ))}
           </div>
         )
       ) : (
-        <div className="py-16 text-center space-y-2">
-          <HardDrive className="w-8 h-8 text-neutral-600 mx-auto" />
-          <p className="text-sm text-neutral-300">No installed applications found</p>
-          <p className="text-xs text-neutral-500">Applications installed through AppHub or WinGet will appear here.</p>
-        </div>
+        <EmptyState
+          icon={<HardDrive className="w-5 h-5" />}
+          title={
+            query || sourceFilter !== 'all'
+              ? 'No Matching Installed Applications'
+              : 'No Installed Applications Detected'
+          }
+          description={
+            query || sourceFilter !== 'all'
+              ? 'Try clearing your search or switching source tabs.'
+              : 'Applications detected via winget list or installed through AppHub will appear here.'
+          }
+          action={
+            query || sourceFilter !== 'all' ? (
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => {
+                  setQuery('');
+                  setSourceFilter('all');
+                }}
+              >
+                Reset Filters
+              </Button>
+            ) : undefined
+          }
+        />
       )}
     </div>
   );

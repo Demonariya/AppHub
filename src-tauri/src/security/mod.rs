@@ -4,14 +4,14 @@ use std::sync::OnceLock;
 static PACKAGE_ID_REGEX: OnceLock<Regex> = OnceLock::new();
 
 /// Validates package identifier according to Microsoft WinGet schema rules:
-/// Format: <Publisher>.<Application> or dotted identifiers, alphanumeric + underscore + dot
+/// Format: <Publisher>.<Application> or dotted identifiers, alphanumeric + underscore + hyphen + plus + dot
 pub fn validate_package_id(id: &str) -> bool {
     if id.is_empty() || id.len() > 128 {
         return false;
     }
 
     let re = PACKAGE_ID_REGEX.get_or_init(|| {
-        Regex::new(r"^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)+$").expect("Valid regex")
+        Regex::new(r"^[A-Za-z0-9_+-]+(\.[A-Za-z0-9_+-]+)+$").expect("Valid regex")
     });
 
     re.is_match(id)
@@ -34,6 +34,7 @@ mod tests {
         assert!(validate_package_id("Mozilla.Firefox"));
         assert!(validate_package_id("VideoLAN.VLC"));
         assert!(validate_package_id("7zip.7zip"));
+        assert!(validate_package_id("Notepad++.Notepad++"));
     }
 
     #[test]

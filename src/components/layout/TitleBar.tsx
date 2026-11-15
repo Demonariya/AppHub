@@ -1,6 +1,7 @@
 import React from 'react';
-import { Minus, Square, X, Terminal, Shield, CheckCircle2 } from 'lucide-react';
+import { Minus, Square, X, Terminal, CheckCircle2, AlertTriangle } from 'lucide-react';
 import { WinGetEnvironment } from '../../types';
+import { isTauriEnvironment } from '../../services/tauriBridge';
 
 interface TitleBarProps {
   environment: WinGetEnvironment;
@@ -13,68 +14,122 @@ export const TitleBar: React.FC<TitleBarProps> = ({
   onOpenTerminal,
   terminalOpen,
 }) => {
+  const isTauri = isTauriEnvironment();
+
+  const handleMinimize = async () => {
+    if (!isTauri) return;
+    try {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window');
+      await getCurrentWindow().minimize();
+    } catch (e) {
+      console.error('Window minimize failed:', e);
+    }
+  };
+
+  const handleToggleMaximize = async () => {
+    if (!isTauri) return;
+    try {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window');
+      await getCurrentWindow().toggleMaximize();
+    } catch (e) {
+      console.error('Window toggleMaximize failed:', e);
+    }
+  };
+
+  const handleClose = async () => {
+    if (!isTauri) return;
+    try {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window');
+      await getCurrentWindow().close();
+    } catch (e) {
+      console.error('Window close failed:', e);
+    }
+  };
+
   return (
-    <div className="h-9 w-full bg-neutral-950/80 backdrop-blur-md border-b border-neutral-800/80 flex items-center justify-between px-3 text-xs select-none sticky top-0 z-50">
-      {/* Brand & Connection Status */}
-      <div className="flex items-center gap-3">
-        <div className="flex items-center gap-2 font-medium tracking-tight text-neutral-200">
-          <div className="w-4 h-4 rounded bg-gradient-to-tr from-sky-600 to-indigo-500 flex items-center justify-center text-[10px] font-bold text-white shadow-sm">
-            W
+    <div
+      data-tauri-drag-region
+      className="h-9 w-full bg-[var(--surface-shell)] border-b border-[var(--border-subtle)] flex items-center justify-between px-3 text-xs select-none sticky top-0 z-50 shrink-0"
+    >
+      {/* Left: Brand & Real WinGet Status */}
+      <div className="flex items-center gap-3 min-w-0" data-tauri-drag-region>
+        <div className="flex items-center gap-2 font-medium tracking-tight">
+          <div className="w-4 h-4 rounded-[4px] bg-[var(--accent-primary)] flex items-center justify-center text-[10px] font-bold text-[var(--accent-primary-contrast)]">
+            A
           </div>
-          <span className="font-semibold text-neutral-100 text-xs">AppHub</span>
+          <span className="font-semibold text-[var(--text-primary)] text-xs">AppHub</span>
         </div>
 
-        <span className="text-neutral-700" aria-hidden="true">|</span>
+        <span className="text-[var(--border-strong)]" aria-hidden="true">|</span>
 
-        {/* WinGet Engine Status Indicator */}
-        <div className="flex items-center gap-1.5 text-[11px] text-neutral-400">
-          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
-          <span>WinGet {environment.version}</span>
-          <span className="text-neutral-600 hidden sm:inline">·</span>
-          <span className="text-neutral-500 hidden sm:inline">{environment.windowsVersion.split(' ')[0]} {environment.windowsVersion.split(' ')[1]}</span>
+        <div
+          className="flex items-center gap-1.5 text-[11px] text-[var(--text-secondary)] truncate"
+          title={environment.error || `WinGet path: ${environment.path || 'auto'}`}
+        >
+          {environment.isInstalled ? (
+            <CheckCircle2 className="w-3.5 h-3.5 text-[var(--status-success-fg)] shrink-0" />
+          ) : (
+            <AlertTriangle className="w-3.5 h-3.5 text-[var(--status-warning-fg)] shrink-0" />
+          )}
+          <span className={environment.isInstalled ? 'text-[var(--text-primary)] font-medium' : 'text-[var(--status-warning-fg)]'}>
+            WinGet {environment.version}
+          </span>
+          {environment.windowsVersion && (
+            <>
+              <span className="text-[var(--text-muted)] hidden sm:inline">·</span>
+              <span className="text-[var(--text-muted)] hidden sm:inline truncate">
+                {environment.windowsVersion}
+              </span>
+            </>
+          )}
         </div>
       </div>
 
-      {/* Middle Window Title */}
-      <div className="hidden md:flex items-center gap-2 text-neutral-400 text-[11px]">
-        <span>Windows Package Manager Store</span>
-      </div>
-
-      {/* Right Controls: Terminal toggle & Windows window buttons */}
-      <div className="flex items-center gap-1">
+      {/* Right: CLI Console Toggle & Native Caption Controls */}
+      <div className="flex items-center gap-1 shrink-0">
         <button
+          type="button"
           onClick={onOpenTerminal}
-          title="Toggle WinGet Terminal Output Console"
-          className={`flex items-center gap-1 px-2 py-0.5 rounded text-[11px] transition-colors ${
+          title="Toggle WinGet CLI Console (Ctrl+`)"
+          aria-pressed={terminalOpen}
+          className={`flex items-center gap-1.5 px-2.5 py-1 rounded-[6px] text-[11px] font-medium transition-colors cursor-pointer ${
             terminalOpen
-              ? 'bg-neutral-800 text-sky-400 border border-neutral-700'
-              : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900'
+              ? 'bg-[var(--accent-soft)] text-[var(--accent-primary)] border border-[var(--accent-border)]'
+              : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)] border border-transparent'
           }`}
         >
           <Terminal className="w-3.5 h-3.5" />
           <span className="hidden sm:inline">CLI Console</span>
         </button>
 
-        <div className="flex items-center ml-2 border-l border-neutral-800 pl-1 text-neutral-400">
-          <button
-            title="Minimize"
-            className="w-8 h-7 flex items-center justify-center hover:bg-neutral-800 hover:text-neutral-200 transition-colors rounded-sm"
-          >
-            <Minus className="w-3.5 h-3.5" />
-          </button>
-          <button
-            title="Maximize"
-            className="w-8 h-7 flex items-center justify-center hover:bg-neutral-800 hover:text-neutral-200 transition-colors rounded-sm"
-          >
-            <Square className="w-3 h-3" />
-          </button>
-          <button
-            title="Close"
-            className="w-8 h-7 flex items-center justify-center hover:bg-red-600 hover:text-white transition-colors rounded-sm"
-          >
-            <X className="w-3.5 h-3.5" />
-          </button>
-        </div>
+        {isTauri && (
+          <div className="flex items-center ml-1.5 border-l border-[var(--border-subtle)] pl-1 text-[var(--text-secondary)]">
+            <button
+              type="button"
+              onClick={handleMinimize}
+              aria-label="Minimize window"
+              className="w-8 h-7 flex items-center justify-center hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)] transition-colors rounded-[4px] cursor-pointer"
+            >
+              <Minus className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={handleToggleMaximize}
+              aria-label="Maximize or restore window"
+              className="w-8 h-7 flex items-center justify-center hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)] transition-colors rounded-[4px] cursor-pointer"
+            >
+              <Square className="w-3 h-3" />
+            </button>
+            <button
+              type="button"
+              onClick={handleClose}
+              aria-label="Close application"
+              className="w-8 h-7 flex items-center justify-center hover:bg-red-600 hover:text-white transition-colors rounded-[4px] cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

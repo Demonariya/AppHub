@@ -1,24 +1,35 @@
-import React, { useState, useMemo } from 'react';
-import { Package, TaskAction, Architecture, PackageSourceType, CategoryType } from '../types';
+import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import { Package, TaskAction, Architecture, CategoryType } from '../types';
 import { AppCard } from '../components/common/AppCard';
 import { AppListItem } from '../components/common/AppListItem';
 import { CATEGORIES_LIST } from '../services/catalog';
+import { wingetEngine } from '../services/wingetEngine';
+import { storage } from '../services/storage';
+import { isTauriEnvironment } from '../services/tauriBridge';
 import {
-  Search,
-  Filter,
-  SlidersHorizontal,
   LayoutGrid,
   List,
-  X,
   ChevronLeft,
   ChevronRight,
-  ShieldCheck,
+  Search,
+  History,
+  Trash2,
 } from 'lucide-react';
+import {
+  PageHeader,
+  SearchInput,
+  FilterSelect,
+  Button,
+  EmptyState,
+  ErrorState,
+  SkeletonGrid,
+} from '../components/ui';
 
 interface DiscoverPageProps {
   packages: Package[];
   onOpenDetails: (pkg: Package) => void;
   onActionClick: (pkg: Package, action: TaskAction) => void;
+  onToggleFavorite?: (pkg: Package) => void;
   initialCategory?: CategoryType | null;
 }
 
@@ -26,23 +37,127 @@ export const DiscoverPage: React.FC<DiscoverPageProps> = ({
   packages,
   onOpenDetails,
   onActionClick,
+  onToggleFavorite,
   initialCategory = null,
 }) => {
   const [query, setQuery] = useState('');
+  const [recentSearches, setRecentSearches] = useState<string[]>(() =>
+    storage.getSearchHistory()
+  );
   const [selectedCategory, setSelectedCategory] = useState<string>(initialCategory || 'All');
   const [selectedSource, setSelectedSource] = useState<string>('all');
   const [selectedArch, setSelectedArch] = useState<string>('all');
   const [selectedStatus, setSelectedStatus] = useState<string>('all');
-  const [sortBy, setSortBy] = useState<'relevance' | 'name' | 'rating' | 'releaseDate'>('relevance');
+  const [sortBy, setSortBy] = useState<'relevance' | 'name' | 'releaseDate'>('relevance');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 12;
 
-  const filtered = useMemo(() => {
-    let result = [...packages];
+  const [remoteResults, setRemoteResults] = useState<Package[] | null>(null);
+  const [isSearching, setIsSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const searchSeqRef = useRef(0);
 
-    // Search query
-    if (query.trim()) {
+  useEffect(() => {
+    setSelectedCategory(initialCategory || 'All');
+    setCurrentPage(1);
+  }, [initialCategory]);
+
+  const executeLiveSearch = useCallback(async (searchText: string) => {
+    const trimmed = searchText.trim();
+    const seq = ++searchSeqRef.current;
+
+    if (!isTauriEnvironment() || trimmed.length < 2) {
+      setRemoteResults(null);
+      setIsSearching(false);
+      setSearchError(null);
+      return;
+    }
+
+    setIsSearching(true);
+    setSearchError(null);
+
+    try {
+      const results = await wingetEngine.searchPackages(trimmed);
+      if (seq !== searchSeqRef.current) return;
+      storage.addSearchQuery(trimmed);
+      setRecentSearches(storage.getSearchHistory());
+      setRemoteResults(results);
+      setIsSearching(false);
+    } catch (err: any) {
+      if (seq !== searchSeqRef.current) return;
+      setSearchError(err?.message || String(err));
+      setRemoteResults(null);
+      setIsSearching(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const trimmed = query.trim();
+    if (!isTauriEnvironment() || trimmed.length < 2) {
+      searchSeqRef.current += 1;
+      setRemoteResults(null);
+      setIsSearching(false);
+      setSearchError(null);
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      void executeLiveSearch(trimmed);
+    }, 350);
+
+    return () => window.clearTimeout(timer);
+  }, [query, executeLiveSearch]);
+
+  const mergedCatalog = useMemo(() => {
+    if (!remoteResults) return packages;
+
+    const localById = new Map<string, Package>();
+    for (const p of packages) {
+      localById.set(p.id.toLowerCase(), p);
+    }
+
+    const combined: Package[] = [];
+    const seen = new Set<string>();
+
+    for (const remote of remoteResults) {
+      const key = remote.id.toLowerCase();
+      seen.add(key);
+      const local = localById.get(key);
+      if (local) {
+        combined.push({
+          ...local,
+          version: remote.latestVersion || local.version,
+          latestVersion: remote.latestVersion || local.latestVersion,
+        });
+      } else {
+        combined.push(remote);
+      }
+    }
+
+    const q = query.toLowerCase().trim();
+    for (const local of packages) {
+      const key = local.id.toLowerCase();
+      if (seen.has(key)) continue;
+      if (
+        local.name.toLowerCase().includes(q) ||
+        local.id.toLowerCase().includes(q) ||
+        local.publisher.toLowerCase().includes(q) ||
+        local.tags.some(t => t.toLowerCase().includes(q)) ||
+        local.description.toLowerCase().includes(q)
+      ) {
+        combined.push(local);
+        seen.add(key);
+      }
+    }
+
+    return combined;
+  }, [packages, remoteResults, query]);
+
+  const filtered = useMemo(() => {
+    let result = [...mergedCatalog];
+
+    if (query.trim() && !remoteResults) {
       const q = query.toLowerCase().trim();
       result = result.filter(
         p =>
@@ -54,22 +169,18 @@ export const DiscoverPage: React.FC<DiscoverPageProps> = ({
       );
     }
 
-    // Category
     if (selectedCategory !== 'All') {
       result = result.filter(p => p.category === selectedCategory);
     }
 
-    // Source
     if (selectedSource !== 'all') {
       result = result.filter(p => p.source === selectedSource);
     }
 
-    // Architecture
     if (selectedArch !== 'all') {
       result = result.filter(p => p.architectures.includes(selectedArch as Architecture));
     }
 
-    // Status
     if (selectedStatus === 'installed') {
       result = result.filter(p => p.isInstalled);
     } else if (selectedStatus === 'available') {
@@ -80,16 +191,23 @@ export const DiscoverPage: React.FC<DiscoverPageProps> = ({
       );
     }
 
-    // Sort
-    result.sort((a, b) => {
-      if (sortBy === 'name') return a.name.localeCompare(b.name);
-      if (sortBy === 'rating') return b.ratingCount - a.ratingCount;
-      if (sortBy === 'releaseDate') return b.releaseDate.localeCompare(a.releaseDate);
-      return 0; // relevance keeps original order
-    });
+    if (sortBy === 'name') {
+      result.sort((a, b) => a.name.localeCompare(b.name));
+    } else if (sortBy === 'releaseDate') {
+      result.sort((a, b) => (b.releaseDate || '').localeCompare(a.releaseDate || ''));
+    }
 
     return result;
-  }, [packages, query, selectedCategory, selectedSource, selectedArch, selectedStatus, sortBy]);
+  }, [
+    mergedCatalog,
+    remoteResults,
+    query,
+    selectedCategory,
+    selectedSource,
+    selectedArch,
+    selectedStatus,
+    sortBy,
+  ]);
 
   const totalPages = Math.ceil(filtered.length / itemsPerPage) || 1;
   const paginated = filtered.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
@@ -102,176 +220,216 @@ export const DiscoverPage: React.FC<DiscoverPageProps> = ({
     setSelectedStatus('all');
     setSortBy('relevance');
     setCurrentPage(1);
+    setRemoteResults(null);
+    setSearchError(null);
   };
 
-  const hasActiveFilters =
+  const hasActiveFilters = Boolean(
     query ||
-    selectedCategory !== 'All' ||
-    selectedSource !== 'all' ||
-    selectedArch !== 'all' ||
-    selectedStatus !== 'all' ||
-    sortBy !== 'relevance';
+      selectedCategory !== 'All' ||
+      selectedSource !== 'all' ||
+      selectedArch !== 'all' ||
+      selectedStatus !== 'all' ||
+      sortBy !== 'relevance'
+  );
 
   return (
-    <div className="p-4 sm:p-8 max-w-7xl mx-auto space-y-6">
-      {/* Top Search & Filter Bar */}
-      <div className="space-y-4">
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
-          {/* Search Input */}
-          <div className="relative flex-1">
-            <Search className="w-4 h-4 text-neutral-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
-            <input
-              type="text"
-              value={query}
-              onChange={e => {
-                setQuery(e.target.value);
-                setCurrentPage(1);
-              }}
-              placeholder="Filter by application name, package ID, publisher, or tags..."
-              className="w-full pl-10 pr-4 py-2 bg-neutral-900 border border-neutral-800 rounded-lg text-xs text-neutral-100 placeholder-neutral-500 focus:outline-none focus:border-neutral-700 transition-colors"
-            />
-            {query && (
-              <button
-                onClick={() => setQuery('')}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-500 hover:text-neutral-300"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            )}
-          </div>
-
-          {/* View Mode Toggle & Sort */}
-          <div className="flex items-center gap-2">
-            <select
-              value={sortBy}
-              onChange={e => setSortBy(e.target.value as any)}
-              className="bg-neutral-900 border border-neutral-800 text-xs text-neutral-300 rounded-lg px-3 py-2 focus:outline-none"
+    <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-6 animate-page-in">
+      <PageHeader
+        title="Explore Packages"
+        subtitle="Browse curated WinGet packages or query the official Windows Package Manager repository."
+        actions={
+          <div className="flex items-center bg-[var(--surface-subtle)] border border-[var(--border-subtle)] rounded-[8px] p-0.5">
+            <button
+              type="button"
+              onClick={() => setViewMode('grid')}
+              aria-label="Grid view"
+              aria-pressed={viewMode === 'grid'}
+              className={`p-1.5 rounded-[6px] transition-colors cursor-pointer ${
+                viewMode === 'grid'
+                  ? 'bg-[var(--surface-panel)] text-[var(--text-primary)] shadow-xs'
+                  : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
+              }`}
             >
-              <option value="relevance">Sort: Relevance</option>
-              <option value="name">Sort: Name (A-Z)</option>
-              <option value="rating">Sort: Popularity</option>
-              <option value="releaseDate">Sort: Release Date</option>
-            </select>
+              <LayoutGrid className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('list')}
+              aria-label="List view"
+              aria-pressed={viewMode === 'list'}
+              className={`p-1.5 rounded-[6px] transition-colors cursor-pointer ${
+                viewMode === 'list'
+                  ? 'bg-[var(--surface-panel)] text-[var(--text-primary)] shadow-xs'
+                  : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
+              }`}
+            >
+              <List className="w-4 h-4" />
+            </button>
+          </div>
+        }
+      />
 
-            <div className="flex items-center bg-neutral-900 border border-neutral-800 rounded-lg p-0.5">
-              <button
-                onClick={() => setViewMode('grid')}
-                title="Grid view"
-                className={`p-1.5 rounded text-neutral-400 transition-colors ${
-                  viewMode === 'grid' ? 'bg-neutral-800 text-white' : 'hover:text-neutral-200'
-                }`}
-              >
-                <LayoutGrid className="w-4 h-4" />
-              </button>
-              <button
-                onClick={() => setViewMode('list')}
-                title="List view"
-                className={`p-1.5 rounded text-neutral-400 transition-colors ${
-                  viewMode === 'list' ? 'bg-neutral-800 text-white' : 'hover:text-neutral-200'
-                }`}
-              >
-                <List className="w-4 h-4" />
-              </button>
-            </div>
+      {/* Search & Filter Toolbar */}
+      <div className="space-y-3">
+        <div className="flex flex-col md:flex-row items-stretch md:items-center gap-3">
+          <SearchInput
+            value={query}
+            onChange={v => {
+              setQuery(v);
+              setCurrentPage(1);
+            }}
+            loading={isSearching}
+            placeholder={
+              isTauriEnvironment()
+                ? 'Search catalog or query live WinGet repository (min 2 chars)...'
+                : 'Search by application name, package ID, publisher, or tag...'
+            }
+            className="flex-1"
+          />
+
+          <div className="flex flex-wrap items-center gap-2">
+            <FilterSelect
+              label="Sort"
+              value={sortBy}
+              onChange={v => setSortBy(v as 'relevance' | 'name' | 'releaseDate')}
+              options={[
+                { value: 'relevance', label: 'Relevance' },
+                { value: 'name', label: 'Name (A–Z)' },
+                { value: 'releaseDate', label: 'Release Date' },
+              ]}
+            />
           </div>
         </div>
 
-        {/* Filter controls strip */}
-        <div className="flex flex-wrap items-center gap-3 text-xs text-neutral-400 pt-1">
-          {/* Category Dropdown */}
-          <div className="flex items-center gap-1.5">
-            <span className="text-neutral-500">Category:</span>
-            <select
-              value={selectedCategory}
-              onChange={e => {
-                setSelectedCategory(e.target.value);
-                setCurrentPage(1);
+        {/* Recent Searches Strip */}
+        {!query && recentSearches.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 text-xs">
+            <span className="inline-flex items-center gap-1 text-[11px] text-[var(--text-muted)] mr-1">
+              <History className="w-3 h-3" />
+              Recent:
+            </span>
+            {recentSearches.slice(0, 6).map(term => (
+              <button
+                key={term}
+                type="button"
+                onClick={() => {
+                  setQuery(term);
+                  setCurrentPage(1);
+                }}
+                className="px-2 py-0.5 text-[11px] rounded-[6px] bg-[var(--surface-panel)] hover:bg-[var(--surface-hover)] border border-[var(--border-subtle)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors cursor-pointer"
+              >
+                {term}
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={() => {
+                storage.clearSearchHistory();
+                setRecentSearches([]);
               }}
-              className="bg-neutral-900 border border-neutral-800 text-xs text-neutral-200 rounded-md px-2.5 py-1 focus:outline-none"
+              className="inline-flex items-center gap-1 text-[11px] text-[var(--text-muted)] hover:text-[var(--status-danger-fg)] ml-1 cursor-pointer"
             >
-              <option value="All">All Categories</option>
-              {CATEGORIES_LIST.map(cat => (
-                <option key={cat} value={cat}>
-                  {cat}
-                </option>
-              ))}
-            </select>
+              <Trash2 className="w-3 h-3" />
+              Clear
+            </button>
           </div>
+        )}
 
-          {/* Source Dropdown */}
-          <div className="flex items-center gap-1.5">
-            <span className="text-neutral-500">Source:</span>
-            <select
-              value={selectedSource}
-              onChange={e => {
-                setSelectedSource(e.target.value);
-                setCurrentPage(1);
-              }}
-              className="bg-neutral-900 border border-neutral-800 text-xs text-neutral-200 rounded-md px-2.5 py-1 focus:outline-none font-mono"
-            >
-              <option value="all">All Sources</option>
-              <option value="winget">winget (official)</option>
-              <option value="msstore">msstore</option>
-            </select>
-          </div>
+        {/* Filters */}
+        <div className="flex flex-wrap items-center gap-3 pt-1">
+          <FilterSelect
+            label="Category"
+            value={selectedCategory}
+            onChange={v => {
+              setSelectedCategory(v);
+              setCurrentPage(1);
+            }}
+            options={[
+              { value: 'All', label: 'All Categories' },
+              ...CATEGORIES_LIST.map(cat => ({ value: cat, label: cat })),
+            ]}
+          />
 
-          {/* Architecture Dropdown */}
-          <div className="flex items-center gap-1.5">
-            <span className="text-neutral-500">Arch:</span>
-            <select
-              value={selectedArch}
-              onChange={e => {
-                setSelectedArch(e.target.value);
-                setCurrentPage(1);
-              }}
-              className="bg-neutral-900 border border-neutral-800 text-xs text-neutral-200 rounded-md px-2.5 py-1 focus:outline-none font-mono uppercase"
-            >
-              <option value="all">Any Architecture</option>
-              <option value="x64">x64 (AMD64)</option>
-              <option value="arm64">ARM64</option>
-              <option value="x86">x86 (32-bit)</option>
-            </select>
-          </div>
+          <FilterSelect
+            label="Source"
+            mono
+            value={selectedSource}
+            onChange={v => {
+              setSelectedSource(v);
+              setCurrentPage(1);
+            }}
+            options={[
+              { value: 'all', label: 'All Sources' },
+              { value: 'winget', label: 'winget' },
+              { value: 'msstore', label: 'msstore' },
+              { value: 'external', label: 'External' },
+            ]}
+          />
 
-          {/* Status Dropdown */}
-          <div className="flex items-center gap-1.5">
-            <span className="text-neutral-500">Status:</span>
-            <select
-              value={selectedStatus}
-              onChange={e => {
-                setSelectedStatus(e.target.value);
-                setCurrentPage(1);
-              }}
-              className="bg-neutral-900 border border-neutral-800 text-xs text-neutral-200 rounded-md px-2.5 py-1 focus:outline-none"
-            >
-              <option value="all">All Packages</option>
-              <option value="installed">Installed Only</option>
-              <option value="available">Not Installed</option>
-              <option value="updates">Updates Available</option>
-            </select>
-          </div>
+          <FilterSelect
+            label="Arch"
+            mono
+            value={selectedArch}
+            onChange={v => {
+              setSelectedArch(v);
+              setCurrentPage(1);
+            }}
+            options={[
+              { value: 'all', label: 'Any' },
+              { value: 'x64', label: 'x64' },
+              { value: 'arm64', label: 'ARM64' },
+              { value: 'x86', label: 'x86' },
+            ]}
+          />
+
+          <FilterSelect
+            label="Status"
+            value={selectedStatus}
+            onChange={v => {
+              setSelectedStatus(v);
+              setCurrentPage(1);
+            }}
+            options={[
+              { value: 'all', label: 'All' },
+              { value: 'installed', label: 'Installed' },
+              { value: 'available', label: 'Not Installed' },
+              { value: 'updates', label: 'Updates Available' },
+            ]}
+          />
 
           {hasActiveFilters && (
-            <button
-              onClick={handleResetFilters}
-              className="text-xs text-sky-400 hover:text-sky-300 ml-auto flex items-center gap-1"
-            >
-              <span>Reset filters</span>
-            </button>
+            <Button size="sm" variant="ghost" onClick={handleResetFilters} className="ml-auto">
+              Reset filters
+            </Button>
           )}
         </div>
       </div>
 
-      {/* Results Count & Current Filter Metadata */}
-      <div className="flex items-center justify-between text-xs text-neutral-400 font-mono tabular-nums pb-2 border-b border-neutral-800/80">
+      {searchError && (
+        <ErrorState
+          title="Live WinGet Query Failed"
+          message={searchError}
+          onRetry={() => executeLiveSearch(query)}
+          onDismiss={() => setSearchError(null)}
+        />
+      )}
+
+      {/* Results Count */}
+      <div className="flex items-center justify-between text-xs text-[var(--text-muted)] font-mono tabular-nums pb-2 border-b border-[var(--border-subtle)]">
         <span>
           Showing {paginated.length} of {filtered.length} packages
+          {remoteResults !== null && ' (includes live WinGet results)'}
         </span>
-        <span>Page {currentPage} of {totalPages}</span>
+        <span>
+          Page {currentPage} of {totalPages}
+        </span>
       </div>
 
-      {/* Package View Area */}
-      {paginated.length > 0 ? (
+      {/* Results Area */}
+      {isSearching && paginated.length === 0 ? (
+        <SkeletonGrid count={8} />
+      ) : paginated.length > 0 ? (
         viewMode === 'grid' ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             {paginated.map(pkg => (
@@ -280,54 +438,62 @@ export const DiscoverPage: React.FC<DiscoverPageProps> = ({
                 pkg={pkg}
                 onOpenDetails={onOpenDetails}
                 onActionClick={onActionClick}
+                onToggleFavorite={onToggleFavorite}
               />
             ))}
           </div>
         ) : (
-          <div className="rounded-xl border border-neutral-800/80 overflow-hidden divide-y divide-neutral-800/60">
+          <div className="rounded-[12px] border border-[var(--border-subtle)] overflow-hidden divide-y divide-[var(--border-subtle)]">
             {paginated.map(pkg => (
               <AppListItem
                 key={pkg.id}
                 pkg={pkg}
                 onOpenDetails={onOpenDetails}
                 onActionClick={onActionClick}
+                onToggleFavorite={onToggleFavorite}
               />
             ))}
           </div>
         )
       ) : (
-        <div className="py-20 text-center space-y-3">
-          <p className="text-sm text-neutral-300">No applications match your filter criteria.</p>
-          <p className="text-xs text-neutral-500">Try broadening your search term or resetting category filters.</p>
-          <button
-            onClick={handleResetFilters}
-            className="px-4 py-2 text-xs font-medium text-neutral-200 bg-neutral-800 hover:bg-neutral-700 rounded-lg transition-colors"
-          >
-            Clear All Filters
-          </button>
-        </div>
+        <EmptyState
+          icon={<Search className="w-5 h-5" />}
+          title="No Matching Packages"
+          description="No applications matched your search query and active filters. Try clearing filters or searching by package ID."
+          action={
+            hasActiveFilters ? (
+              <Button size="md" variant="secondary" onClick={handleResetFilters}>
+                Clear All Filters
+              </Button>
+            ) : undefined
+          }
+        />
       )}
 
-      {/* Pagination Footer */}
+      {/* Pagination */}
       {totalPages > 1 && (
-        <div className="flex items-center justify-center gap-2 pt-4">
-          <button
+        <div className="flex items-center justify-center gap-2 pt-2">
+          <Button
+            size="sm"
+            variant="secondary"
             onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
             disabled={currentPage === 1}
-            className="p-2 rounded-lg bg-neutral-900 border border-neutral-800 text-neutral-400 hover:text-neutral-200 disabled:opacity-40 transition-colors"
+            aria-label="Previous page"
           >
             <ChevronLeft className="w-4 h-4" />
-          </button>
-          <span className="text-xs text-neutral-400 font-mono px-3">
+          </Button>
+          <span className="text-xs text-[var(--text-secondary)] font-mono tabular-nums px-3">
             {currentPage} / {totalPages}
           </span>
-          <button
+          <Button
+            size="sm"
+            variant="secondary"
             onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
             disabled={currentPage === totalPages}
-            className="p-2 rounded-lg bg-neutral-900 border border-neutral-800 text-neutral-400 hover:text-neutral-200 disabled:opacity-40 transition-colors"
+            aria-label="Next page"
           >
             <ChevronRight className="w-4 h-4" />
-          </button>
+          </Button>
         </div>
       )}
     </div>

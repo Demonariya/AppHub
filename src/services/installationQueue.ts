@@ -2,30 +2,41 @@ import { Architecture, InstallationTask, Package, TaskAction } from '../types';
 import { storage } from './storage';
 import { wingetEngine } from './wingetEngine';
 
-type QueueListener = (tasks: InstallationTask[], activeTask: InstallationTask | null) => void;
+type QueueListener = (
+  tasks: InstallationTask[],
+  activeTasks: InstallationTask[],
+  primaryActive: InstallationTask | null
+) => void;
+type CompletionListener = (task: InstallationTask) => void;
 
 class InstallationQueueService {
   private queue: InstallationTask[] = [];
-  private activeTask: InstallationTask | null = null;
-  private isProcessing = false;
+  private activeTasks: Map<string, InstallationTask> = new Map();
   private cancelFlags = new Map<string, boolean>();
   private listeners: Set<QueueListener> = new Set();
-
-  constructor() {
-    // Load any uncompleted tasks from local history or start clean
-  }
+  private completionListeners: Set<CompletionListener> = new Set();
 
   public subscribe(listener: QueueListener): () => void {
     this.listeners.add(listener);
-    listener([...this.queue], this.activeTask);
+    const actives = Array.from(this.activeTasks.values());
+    listener([...this.queue], actives, actives[0] || null);
     return () => {
       this.listeners.delete(listener);
     };
   }
 
+  public onTaskCompleted(listener: CompletionListener): () => void {
+    this.completionListeners.add(listener);
+    return () => {
+      this.completionListeners.delete(listener);
+    };
+  }
+
   private notify(): void {
+    const actives = Array.from(this.activeTasks.values());
+    const primary = actives[0] || null;
     for (const listener of this.listeners) {
-      listener([...this.queue], this.activeTask);
+      listener([...this.queue], actives, primary);
     }
   }
 
@@ -34,7 +45,18 @@ class InstallationQueueService {
   }
 
   public getActiveTask(): InstallationTask | null {
-    return this.activeTask;
+    return Array.from(this.activeTasks.values())[0] || null;
+  }
+
+  public getActiveTasks(): InstallationTask[] {
+    return Array.from(this.activeTasks.values());
+  }
+
+  public hasPendingOrActiveForPackage(packageId: string): boolean {
+    if (Array.from(this.activeTasks.values()).some(t => t.packageId === packageId)) {
+      return true;
+    }
+    return this.queue.some(t => t.packageId === packageId);
   }
 
   public enqueue(
@@ -48,6 +70,18 @@ class InstallationQueueService {
       customLocation?: string;
     } = {}
   ): InstallationTask {
+    // Prevent duplicate concurrent or queued operations for the same package
+    const existingActive = Array.from(this.activeTasks.values()).find(
+      t => t.packageId === pkg.id
+    );
+    if (existingActive) {
+      return existingActive;
+    }
+    const existingQueued = this.queue.find(t => t.packageId === pkg.id);
+    if (existingQueued) {
+      return existingQueued;
+    }
+
     const settings = storage.getSettings();
     const task: InstallationTask = {
       id: `task_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
@@ -58,6 +92,7 @@ class InstallationQueueService {
       targetVersion: options.targetVersion || pkg.latestVersion,
       status: 'queued',
       progress: 0,
+      isIndeterminate: true,
       startTime: Date.now(),
       logs: [],
       flags: {
@@ -72,17 +107,21 @@ class InstallationQueueService {
 
     this.queue.push(task);
     this.cancelFlags.set(task.id, false);
+    storage.addHistoryTask(task);
     this.notify();
-    this.processNext();
+    this.pumpQueue();
     return task;
   }
 
-  public cancel(taskId: string): void {
+  public async cancel(taskId: string): Promise<void> {
     this.cancelFlags.set(taskId, true);
-    if (this.activeTask && this.activeTask.id === taskId) {
-      this.activeTask.status = 'cancelled';
-      this.activeTask.endTime = Date.now();
-      storage.addHistoryTask(this.activeTask);
+    const active = this.activeTasks.get(taskId);
+    if (active) {
+      await wingetEngine.cancelTask(taskId);
+      active.status = 'cancelled';
+      active.endTime = Date.now();
+      active.error = 'Cancelled by user';
+      storage.addHistoryTask(active);
       this.notify();
     } else {
       const idx = this.queue.findIndex(t => t.id === taskId);
@@ -90,6 +129,7 @@ class InstallationQueueService {
         const [cancelled] = this.queue.splice(idx, 1);
         cancelled.status = 'cancelled';
         cancelled.endTime = Date.now();
+        cancelled.error = 'Cancelled by user';
         storage.addHistoryTask(cancelled);
         this.notify();
       }
@@ -108,7 +148,9 @@ class InstallationQueueService {
     this.enqueue(pkg, task.action, {
       targetVersion: task.targetVersion,
       silent: task.flags.silent,
+      force: task.flags.force,
       architecture: task.flags.architecture,
+      customLocation: task.flags.customLocation,
     });
   }
 
@@ -116,36 +158,42 @@ class InstallationQueueService {
     for (const task of this.queue) {
       task.status = 'cancelled';
       task.endTime = Date.now();
+      task.error = 'Cleared from queue';
       storage.addHistoryTask(task);
     }
     this.queue = [];
     this.notify();
   }
 
-  private async processNext(): Promise<void> {
-    if (this.isProcessing || this.queue.length === 0) {
-      return;
+  private pumpQueue(): void {
+    const maxConcurrency = Math.max(1, Math.min(4, storage.getSettings().maxConcurrentDownloads || 1));
+    while (this.activeTasks.size < maxConcurrency && this.queue.length > 0) {
+      const next = this.queue.shift()!;
+      void this.runTask(next);
     }
+  }
 
-    this.isProcessing = true;
-    const task = this.queue.shift()!;
-    this.activeTask = task;
+  private async runTask(task: InstallationTask): Promise<void> {
+    this.activeTasks.set(task.id, task);
     this.notify();
 
     const packages = storage.getPackages();
-    const pkg = packages.find(p => p.id === task.packageId);
-
-    if (!pkg) {
-      task.status = 'failed';
-      task.error = `Package ${task.packageId} not found in repository`;
-      task.endTime = Date.now();
-      storage.addHistoryTask(task);
-      this.activeTask = null;
-      this.isProcessing = false;
-      this.notify();
-      this.processNext();
-      return;
-    }
+    const pkg = packages.find(p => p.id === task.packageId) || {
+      id: task.packageId,
+      name: task.packageName,
+      publisher: task.packageId.split('.')[0] || 'Unknown',
+      version: task.version,
+      latestVersion: task.targetVersion || task.version,
+      description: '',
+      category: 'Utilities' as const,
+      tags: [],
+      source: 'winget' as const,
+      architectures: ['x64' as const],
+      license: 'Unknown',
+      homepage: '',
+      releaseDate: '',
+      verified: true,
+    };
 
     const isCancelled = () => !!this.cancelFlags.get(task.id);
 
@@ -153,9 +201,11 @@ class InstallationQueueService {
       const result = await wingetEngine.executeTask(
         task,
         pkg,
-        (progress, speed) => {
+        (progress, opts) => {
           task.progress = progress;
-          task.downloadSpeed = speed;
+          if (opts?.speed !== undefined) task.downloadSpeed = opts.speed;
+          if (opts?.isIndeterminate !== undefined) task.isIndeterminate = opts.isIndeterminate;
+          if (opts?.status !== undefined) task.status = opts.status;
           this.notify();
         },
         () => {
@@ -165,12 +215,13 @@ class InstallationQueueService {
       );
 
       task.endTime = Date.now();
+      task.exitCode = result.exitCode;
+      task.isIndeterminate = false;
 
       if (result.success) {
         task.status = 'completed';
         task.progress = 100;
 
-        // Update installed state in local catalog
         if (task.action === 'uninstall') {
           storage.updatePackage(pkg.id, {
             isInstalled: false,
@@ -185,19 +236,26 @@ class InstallationQueueService {
           });
         }
       } else {
-        task.status = isCancelled() ? 'cancelled' : 'failed';
+        task.status = result.cancelled || isCancelled() ? 'cancelled' : 'failed';
         task.error = result.error || 'WinGet execution failed';
       }
     } catch (e) {
       task.status = 'failed';
       task.error = (e as Error).message;
       task.endTime = Date.now();
+      task.exitCode = -1;
     } finally {
       storage.addHistoryTask(task);
-      this.activeTask = null;
-      this.isProcessing = false;
+      this.activeTasks.delete(task.id);
+      for (const cb of this.completionListeners) {
+        try {
+          cb(task);
+        } catch {
+          // ignore listener errors
+        }
+      }
       this.notify();
-      this.processNext();
+      this.pumpQueue();
     }
   }
 }

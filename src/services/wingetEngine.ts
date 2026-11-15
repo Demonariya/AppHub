@@ -1,4 +1,13 @@
-import { Architecture, InstallationTask, Package, TaskLogEntry, WinGetEnvironment } from '../types';
+import {
+  Architecture,
+  InstallationTask,
+  Package,
+  PackageVersionInfo,
+  TaskLogEntry,
+  WinGetEnvironment,
+} from '../types';
+import { isTauriEnvironment, invokeCommand, tryInvokeCommand } from './tauriBridge';
+import { storage } from './storage';
 
 export interface WinGetCommandResult {
   exitCode: number;
@@ -9,41 +18,80 @@ export interface WinGetCommandResult {
 }
 
 export type LogListener = (entry: TaskLogEntry) => void;
-export type ProgressListener = (progress: number, speed?: string) => void;
+export type ProgressListener = (
+  progress: number,
+  options?: { speed?: string; isIndeterminate?: boolean; status?: InstallationTask['status'] }
+) => void;
+
+interface NativeWinGetOutputEvent {
+  task_id: string;
+  stream: string;
+  line: string;
+  progress: number | null;
+  is_indeterminate: boolean;
+  download_speed: string | null;
+  phase: string | null;
+}
 
 class WinGetEngineService {
   private environment: WinGetEnvironment = {
-    isInstalled: true,
-    version: 'v1.9.25200',
-    appInstallerAvailable: true,
-    path: 'C:\\Users\\Default\\AppData\\Local\\Microsoft\\WindowsApps\\winget.exe',
-    locale: 'en-US',
-    windowsVersion: 'Windows 11 Pro 23H2 (Build 22631.4460)',
+    isInstalled: false,
+    version: isTauriEnvironment() ? 'Checking...' : 'Unavailable (Web Preview)',
+    appInstallerAvailable: false,
+    path: '',
+    locale: typeof navigator !== 'undefined' ? navigator.language || 'en-US' : 'en-US',
+    windowsVersion: isTauriEnvironment() ? 'Detecting Windows...' : 'Browser Preview',
     architecture: 'x64',
     adminPrivileges: false,
   };
 
-  public getEnvironment(): WinGetEnvironment {
+  private environmentLoaded = false;
+
+  public async refreshEnvironment(explicitPath?: string): Promise<WinGetEnvironment> {
+    if (isTauriEnvironment()) {
+      try {
+        const customPath = explicitPath ?? storage.getSettings().wingetPath;
+        const info = await invokeCommand<any>('check_winget_environment', {
+          wingetPath: customPath && customPath.trim() ? customPath.trim() : null,
+        });
+        this.environment = {
+          isInstalled: Boolean(info.is_installed),
+          version: info.version || 'Not Detected',
+          appInstallerAvailable: Boolean(info.app_installer_available),
+          path: typeof info.path === 'string' ? info.path : 'winget',
+          locale: typeof navigator !== 'undefined' ? navigator.language || 'en-US' : 'en-US',
+          windowsVersion: info.windows_version || 'Windows',
+          architecture: (info.architecture || 'x64') as Architecture,
+          adminPrivileges: false,
+          error: info.error || undefined,
+        };
+        this.environmentLoaded = true;
+      } catch (err: any) {
+        this.environment = {
+          ...this.environment,
+          isInstalled: false,
+          version: 'Not Detected',
+          appInstallerAvailable: false,
+          error: err?.message || String(err),
+        };
+      }
+    }
     return { ...this.environment };
   }
 
-  public setAdminPrivileges(elevated: boolean): void {
-    this.environment.adminPrivileges = elevated;
+  public getEnvironment(): WinGetEnvironment {
+    if (!this.environmentLoaded && isTauriEnvironment()) {
+      this.refreshEnvironment().catch(() => {});
+    }
+    return { ...this.environment };
   }
 
-  /**
-   * Validates package identifier according to Microsoft WinGet schema rules:
-   * Format: <Publisher>.<Application> or dotted identifiers, alphanumeric + underscore + dot
-   */
   public isValidPackageId(id: string): boolean {
     if (!id || typeof id !== 'string') return false;
-    const regex = /^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)+$/;
+    const regex = /^[A-Za-z0-9_+-]+(\.[A-Za-z0-9_+-]+)+$/;
     return regex.test(id) && id.length <= 128;
   }
 
-  /**
-   * Generates safe command arguments array for winget commands (preventing shell injection)
-   */
   public buildInstallArgs(
     packageId: string,
     options: {
@@ -87,22 +135,19 @@ class WinGetEngineService {
     return args;
   }
 
-  public buildUpgradeArgs(packageId?: string, silent = true): string[] {
+  public buildUpgradeArgs(packageId?: string, silent = true, acceptAgreements = true): string[] {
     if (!packageId) {
       const args = ['upgrade', '--all'];
       if (silent) args.push('--silent');
-      args.push('--accept-package-agreements', '--accept-source-agreements');
+      if (acceptAgreements) args.push('--accept-package-agreements', '--accept-source-agreements');
       return args;
     }
     const args = ['upgrade', '--id', packageId, '--exact'];
     if (silent) args.push('--silent');
-    args.push('--accept-package-agreements', '--accept-source-agreements');
+    if (acceptAgreements) args.push('--accept-package-agreements', '--accept-source-agreements');
     return args;
   }
 
-  /**
-   * Format command array into standard PowerShell/CMD preview
-   */
   public formatCliPreview(args: string[]): string {
     return `winget ${args
       .map((a, idx) => {
@@ -115,17 +160,140 @@ class WinGetEngineService {
   }
 
   /**
-   * Executes a winget command asynchronously with real progress and log streaming.
-   * If running inside Tauri desktop environment, invokes native Rust backend;
-   * Otherwise executes via native-fidelity WinGet process emulator.
+   * Executes real `winget search` via native backend.
+   * Throws when native execution fails so UI can show an explicit error & retry state instead of fake results.
    */
+  public async searchPackages(query: string): Promise<Package[]> {
+    const trimmed = query.trim();
+    if (!trimmed) return [];
+
+    if (!isTauriEnvironment()) {
+      return [];
+    }
+
+    const wingetPath = storage.getSettings().wingetPath || null;
+    const rawResults = await invokeCommand<any[]>('winget_search', {
+      query: trimmed,
+      wingetPath,
+    });
+    return (rawResults || []).map(r => ({
+      id: r.id,
+      name: r.name || r.id,
+      publisher: r.publisher || r.id.split('.')[0] || 'Unknown',
+      version: r.version || 'Unknown',
+      latestVersion: r.latest_version || r.version || 'Unknown',
+      description: r.description || `WinGet package ${r.id}`,
+      category: (r.category || 'Utilities') as any,
+      tags: [r.source || 'winget'],
+      source: (r.source === 'msstore' ? 'msstore' : r.source === 'winget' ? 'winget' : 'custom') as any,
+      architectures: (r.architectures || ['x64']) as any,
+      license: r.license || 'See package details',
+      homepage: r.homepage || '',
+      releaseDate: '',
+      verified: r.source === 'winget' || r.source === 'msstore',
+      isInstalled: Boolean(r.is_installed),
+      installedVersion: r.installed_version || undefined,
+    }));
+  }
+
+  /**
+   * Executes real `winget list` via native backend.
+   */
+  public async listInstalledPackages(query?: string): Promise<Array<{
+    id: string;
+    name: string;
+    version: string;
+    availableVersion?: string;
+    source?: string;
+    isWingetManaged: boolean;
+  }>> {
+    if (!isTauriEnvironment()) return [];
+
+    const wingetPath = storage.getSettings().wingetPath || null;
+    const raw = await invokeCommand<any[]>('winget_list', {
+      query: query || null,
+      wingetPath,
+    });
+    return (raw || []).map(r => ({
+      id: r.id,
+      name: r.name,
+      version: r.version,
+      availableVersion: r.available_version || undefined,
+      source: r.source || undefined,
+      isWingetManaged: Boolean(r.is_winget_managed),
+    }));
+  }
+
+  /**
+   * Executes real `winget upgrade` via native backend.
+   */
+  public async listAvailableUpgrades(): Promise<Array<{
+    id: string;
+    name: string;
+    installedVersion: string;
+    availableVersion: string;
+    source: string;
+  }>> {
+    if (!isTauriEnvironment()) return [];
+
+    const wingetPath = storage.getSettings().wingetPath || null;
+    const raw = await invokeCommand<any[]>('winget_upgrade_list', { wingetPath });
+    return (raw || []).map(r => ({
+      id: r.id,
+      name: r.name,
+      installedVersion: r.installed_version,
+      availableVersion: r.available_version,
+      source: r.source,
+    }));
+  }
+
+  /**
+   * Executes real `winget show --id <id>` via native backend.
+   */
+  public async showPackageDetails(packageId: string): Promise<Partial<Package> | null> {
+    if (!this.isValidPackageId(packageId)) return null;
+    if (!isTauriEnvironment()) return null;
+
+    const wingetPath = storage.getSettings().wingetPath || null;
+    const details = await invokeCommand<any>('winget_show', {
+      packageId,
+      wingetPath,
+    });
+    if (!details) return null;
+
+    return {
+      name: details.name,
+      publisher: details.publisher,
+      author: details.author || undefined,
+      version: details.version,
+      latestVersion: details.version,
+      description: details.description || undefined,
+      longDescription: details.description || undefined,
+      homepage: details.homepage || undefined,
+      publisherUrl: details.publisher_url || undefined,
+      license: details.license || undefined,
+      licenseUrl: details.license_url || undefined,
+      releaseDate: details.release_date || undefined,
+      releaseNotes: details.release_notes || undefined,
+      installerType: details.installer_type || undefined,
+      installerUrl: details.installer_url || undefined,
+      sha256: details.installer_sha256 || undefined,
+      tags: Array.isArray(details.tags) && details.tags.length > 0 ? details.tags : undefined,
+    };
+  }
+
+  public async cancelTask(taskId: string): Promise<boolean> {
+    if (!isTauriEnvironment()) return false;
+    return (await tryInvokeCommand<boolean>('cancel_winget_operation', { taskId }, false)) ?? false;
+  }
+
   public async executeTask(
     task: InstallationTask,
     pkg: Package,
     onProgress: ProgressListener,
     onLog: LogListener,
     isCancelled: () => boolean
-  ): Promise<{ success: boolean; error?: string }> {
+  ): Promise<{ success: boolean; error?: string; exitCode?: number; cancelled?: boolean }> {
     const timestamp = () => new Date().toLocaleTimeString();
 
     const addLog = (level: TaskLogEntry['level'], message: string) => {
@@ -134,324 +302,304 @@ class WinGetEngineService {
       onLog(entry);
     };
 
-    const actionVerb =
-      task.action === 'install'
-        ? 'Installing'
-        : task.action === 'update'
-        ? 'Updating'
-        : task.action === 'uninstall'
-        ? 'Uninstalling'
-        : 'Reinstalling';
-
-    addLog('info', `Microsoft Windows [Version 10.0.22631.4460]`);
-    addLog('info', `(c) Microsoft Corporation. All rights reserved.`);
-    addLog('info', ``);
-
     const args =
       task.action === 'uninstall'
         ? this.buildUninstallArgs(task.packageId, task.flags.silent)
         : task.action === 'update'
-        ? this.buildUpgradeArgs(task.packageId, task.flags.silent)
+        ? this.buildUpgradeArgs(task.packageId, task.flags.silent, task.flags.acceptPackageAgreements)
         : this.buildInstallArgs(task.packageId, {
             silent: task.flags.silent,
             force: task.flags.force,
+            version: task.targetVersion && task.targetVersion !== pkg.latestVersion ? task.targetVersion : undefined,
             architecture: task.flags.architecture,
             customLocation: task.flags.customLocation,
             acceptPackageAgreements: task.flags.acceptPackageAgreements,
             acceptSourceAgreements: task.flags.acceptSourceAgreements,
           });
 
-    addLog('info', `PS C:\\Users\\Desktop> ${this.formatCliPreview(args)}`);
+    addLog('info', `> ${this.formatCliPreview(args)}`);
 
     if (!this.isValidPackageId(task.packageId)) {
-      addLog('error', `Error 0x8A150011: Invalid package identifier '${task.packageId}'`);
-      return { success: false, error: 'Invalid package identifier' };
+      addLog('error', `Invalid package identifier '${task.packageId}'`);
+      return { success: false, error: 'Invalid package identifier', exitCode: 1 };
     }
 
-    // Step 1: Source lookup & Verification
-    await this.delay(350);
     if (isCancelled()) {
-      addLog('warn', `Operation cancelled by user (Exit code: 0x8A15002B)`);
-      return { success: false, error: 'Cancelled by user' };
+      addLog('warn', `Operation cancelled before execution.`);
+      return { success: false, error: 'Cancelled by user', cancelled: true, exitCode: -1 };
     }
 
-    addLog('info', `Found ${pkg.name} [${pkg.id}] Version ${task.targetVersion || pkg.latestVersion}`);
-    addLog('info', `Source: ${pkg.source} (${pkg.license} license)`);
-    addLog('info', `Publisher: ${pkg.publisher}`);
+    if (isTauriEnvironment()) {
+      let unlisten: (() => void) | null = null;
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        unlisten = await listen<NativeWinGetOutputEvent>('winget-output', event => {
+          const payload = event.payload;
+          if (!payload || payload.task_id !== task.id) return;
 
-    if (task.action === 'uninstall') {
-      task.status = 'installing';
-      addLog('info', `Starting package uninstall...`);
-      for (let p = 10; p <= 100; p += 20) {
-        if (isCancelled()) {
-          addLog('warn', `Uninstall cancelled by user.`);
-          return { success: false, error: 'Cancelled by user' };
+          if (payload.line) {
+            const lower = payload.line.toLowerCase();
+            const level: TaskLogEntry['level'] =
+              payload.stream === 'stderr' || lower.includes('error') || lower.includes('failed')
+                ? 'error'
+                : lower.includes('successfully')
+                ? 'success'
+                : 'info';
+            addLog(level, payload.line);
+          }
+
+          const phaseStatus = payload.phase as InstallationTask['status'] | null;
+          if (payload.progress !== null && payload.progress !== undefined) {
+            onProgress(payload.progress, {
+              isIndeterminate: false,
+              speed: payload.download_speed || undefined,
+              status: phaseStatus || undefined,
+            });
+          } else {
+            onProgress(task.progress, {
+              isIndeterminate: payload.is_indeterminate,
+              status: phaseStatus || undefined,
+            });
+          }
+        });
+
+        task.status = task.action === 'uninstall' ? 'installing' : 'downloading';
+        onProgress(0, { isIndeterminate: true, status: task.status });
+        addLog('info', `Starting WinGet process...`);
+
+        const wingetPath = storage.getSettings().wingetPath || null;
+        let result: {
+          exit_code: number;
+          stdout: string;
+          stderr: string;
+          success: boolean;
+          cancelled: boolean;
+        };
+
+        if (task.action === 'uninstall') {
+          result = await invokeCommand('winget_uninstall', {
+            packageId: task.packageId,
+            silent: task.flags.silent,
+            taskId: task.id,
+            wingetPath,
+          });
+        } else if (task.action === 'update') {
+          result = await invokeCommand('winget_upgrade', {
+            packageId: task.packageId,
+            silent: task.flags.silent,
+            acceptAgreements: task.flags.acceptPackageAgreements,
+            taskId: task.id,
+            wingetPath,
+          });
+        } else {
+          result = await invokeCommand('winget_install', {
+            packageId: task.packageId,
+            silent: task.flags.silent,
+            force: task.flags.force,
+            version: task.targetVersion || null,
+            customLocation: task.flags.customLocation || null,
+            architecture: task.flags.architecture || null,
+            acceptAgreements: task.flags.acceptPackageAgreements,
+            taskId: task.id,
+            wingetPath,
+          });
         }
-        await this.delay(200);
-        onProgress(p);
+
+        if (result.cancelled) {
+          addLog('warn', `WinGet operation cancelled.`);
+          return {
+            success: false,
+            error: 'Cancelled by user',
+            exitCode: result.exit_code,
+            cancelled: true,
+          };
+        }
+
+        if (result.success && result.exit_code === 0) {
+          onProgress(100, { isIndeterminate: false, status: 'completed' });
+          addLog('success', `WinGet exited with code 0 (${pkg.id})`);
+          return { success: true, exitCode: 0 };
+        } else {
+          const errCodeHex = `0x${(result.exit_code >>> 0).toString(16).toUpperCase()}`;
+          addLog('error', `WinGet exited with code ${result.exit_code} (${errCodeHex})`);
+          return {
+            success: false,
+            error: result.stderr?.trim() || `WinGet exited with code ${result.exit_code} (${errCodeHex})`,
+            exitCode: result.exit_code,
+          };
+        }
+      } catch (nativeErr: any) {
+        const msg = nativeErr?.message || String(nativeErr);
+        addLog('error', `Execution error: ${msg}`);
+        return { success: false, error: msg, exitCode: -1 };
+      } finally {
+        if (unlisten) unlisten();
       }
-      addLog('success', `Successfully uninstalled ${pkg.name} [${pkg.id}]`);
-      addLog('info', `Process exited with code 0 (Success)`);
-      return { success: true };
     }
 
-    // Step 2: Downloading
-    task.status = 'downloading';
-    addLog('info', `Downloading https://cdn.winget.microsoft.com/packages/${pkg.id}/${pkg.latestVersion}/installer.exe`);
-
-    const totalSteps = 6;
-    for (let i = 1; i <= totalSteps; i++) {
-      if (isCancelled()) {
-        addLog('warn', `Download aborted (Exit code: 0x8A15002B)`);
-        return { success: false, error: 'Download aborted' };
-      }
-      const progress = Math.round((i / totalSteps) * 60);
-      const speed = `${(24.5 + Math.random() * 8.2).toFixed(1)} MB/s`;
-      const downloadedMb = ((pkg.sizeBytes || 45000000) * (progress / 100) / 1048576).toFixed(1);
-      const totalMb = ((pkg.sizeBytes || 45000000) / 1048576).toFixed(1);
-
-      addLog('info', `[████████░░░░░░░░] ${progress}% (${downloadedMb} MB / ${totalMb} MB) @ ${speed}`);
-      onProgress(progress, speed);
-      await this.delay(300);
-    }
-
-    // Step 3: Verifying hash
-    task.status = 'verifying';
-    addLog('info', `Verifying installer hash...`);
-    await this.delay(300);
-    if (isCancelled()) {
-      addLog('warn', `Verification interrupted.`);
-      return { success: false, error: 'Verification interrupted' };
-    }
-    const hash = pkg.sha256 || 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
-    addLog('info', `SHA256: ${hash.slice(0, 32)}...`);
-    addLog('success', `Successfully verified installer hash`);
-    onProgress(70);
-
-    // Step 4: Installing
-    task.status = 'installing';
-    addLog('info', `Starting package ${task.action === 'update' ? 'upgrade' : 'install'}...`);
-    if (task.flags.customLocation) {
-      addLog('info', `Target installation directory: ${task.flags.customLocation} (--location)`);
-    }
-    if (task.flags.silent) {
-      addLog('info', `Executing installer in silent mode (--silent)`);
-    }
-
-    for (let p = 75; p <= 98; p += 8) {
-      if (isCancelled()) {
-        addLog('warn', `Installation process terminated.`);
-        return { success: false, error: 'Terminated by user' };
-      }
-      await this.delay(400);
-      onProgress(p);
-    }
-
-    await this.delay(250);
-    onProgress(100);
-    addLog('success', `Successfully ${actionVerb.toLowerCase()} ${pkg.name} [${pkg.id}] Version ${task.targetVersion || pkg.latestVersion}`);
-    addLog('info', `Process exited with code 0 (Success)`);
-
-    return { success: true };
+    // Outside Tauri (browser preview / Node test environment): fail honestly without pretending WinGet ran
+    addLog(
+      'error',
+      `Native WinGet CLI cannot run inside a browser preview. Launch the AppHub Windows desktop app to execute '${this.formatCliPreview(args)}'.`
+    );
+    return {
+      success: false,
+      error: 'WinGet CLI requires the Windows desktop runtime.',
+      exitCode: 1,
+    };
   }
 
-  /**
-   * Simulates/Executes `winget show --id <id> --versions`
-   * Retrieves full chronological timeline of released versions with release notes.
-   */
-  public async fetchPackageVersions(pkg: Package): Promise<import('../types').PackageVersionInfo[]> {
-    await this.delay(200);
-
-    // If package has pre-defined version history, use it
-    if (pkg.versionHistory && pkg.versionHistory.length > 0) {
-      return pkg.versionHistory;
+  public async pinPackage(packageId: string, pin: boolean, version?: string): Promise<boolean> {
+    if (!isTauriEnvironment()) return false;
+    const wingetPath = storage.getSettings().wingetPath || null;
+    if (pin) {
+      const res = await invokeCommand<any>('winget_pin_add', {
+        packageId,
+        version: version || null,
+        wingetPath,
+      });
+      return Boolean(res?.success);
+    } else {
+      const res = await invokeCommand<any>('winget_pin_remove', {
+        packageId,
+        wingetPath,
+      });
+      return Boolean(res?.success);
     }
+  }
 
-    const latest = pkg.latestVersion;
-    const installed = pkg.installedVersion;
+  // --- Real Source Management ---
 
-    // Generate accurate semantic versions based on the package ID
-    const customHistories: Record<string, import('../types').PackageVersionInfo[]> = {
-      'Microsoft.VisualStudioCode': [
-        {
-          version: '1.95.3',
-          releaseDate: '2024-11-12',
-          changelog: 'Node.js v20.18 update, TypeScript 5.6.3 support, multi-root workspace performance boosts.',
-          type: 'patch',
-          isLatest: true,
-          downloadSize: '90.2 MB',
-          breakingChanges: false,
-        },
-        {
-          version: '1.94.2',
-          releaseDate: '2024-10-15',
-          changelog: 'Terminal scroll performance optimizations, multi-cursor navigation enhancements, Git graph view.',
-          type: 'patch',
-          isCurrent: installed === '1.94.2',
-          downloadSize: '89.4 MB',
-          breakingChanges: false,
-        },
-        {
-          version: '1.93.1',
-          releaseDate: '2024-09-18',
-          changelog: 'Profile switching stability fixes, voiceover screen reader updates, editor bracket matching.',
-          type: 'patch',
-          downloadSize: '88.8 MB',
-          breakingChanges: false,
-        },
-        {
-          version: '1.92.0',
-          releaseDate: '2024-08-08',
-          changelog: 'Custom titlebar control layout, Python native REPL integration, Electron 30 engine upgrade.',
-          type: 'minor',
-          downloadSize: '87.5 MB',
-          breakingChanges: true,
-        },
-        {
-          version: '1.90.0',
-          releaseDate: '2024-06-05',
-          changelog: 'Major architectural release: Tab multi-select drag & drop, IntelliSense semantic highlighting.',
-          type: 'major',
-          downloadSize: '86.1 MB',
-          breakingChanges: true,
-        },
-      ],
-      'Mozilla.Firefox': [
-        {
-          version: '133.0.3',
-          releaseDate: '2024-11-20',
-          changelog: 'Security advisory 2024-81 zero-day patch, canvas memory leak fix on Windows 11 23H2.',
-          type: 'patch',
-          isLatest: true,
-          downloadSize: '58.5 MB',
-          breakingChanges: false,
-        },
-        {
-          version: '132.0.2',
-          releaseDate: '2024-10-15',
-          changelog: 'Media playback GPU hang resolution, hardware WebM acceleration stability.',
-          type: 'patch',
-          isCurrent: installed === '132.0.2',
-          downloadSize: '57.8 MB',
-          breakingChanges: false,
-        },
-        {
-          version: '131.0.0',
-          releaseDate: '2024-09-24',
-          changelog: 'Temporary single-use site permissions, tab overview menu, on-device translation.',
-          type: 'minor',
-          downloadSize: '56.9 MB',
-          breakingChanges: false,
-        },
-        {
-          version: '130.0.0',
-          releaseDate: '2024-08-14',
-          changelog: 'Firefox Labs experimental settings UI, full page translation engine enhancements.',
-          type: 'minor',
-          downloadSize: '55.4 MB',
-          breakingChanges: false,
-        },
-      ],
-      'Microsoft.PowerToys': [
-        {
-          version: '0.86.0',
-          releaseDate: '2024-11-07',
-          changelog: 'New Workspaces utility, Advanced Paste with local AI models, FancyZones multi-monitor fixes.',
-          type: 'minor',
-          isLatest: true,
-          downloadSize: '180.0 MB',
-          breakingChanges: false,
-        },
-        {
-          version: '0.85.0',
-          releaseDate: '2024-10-08',
-          changelog: 'New file template context menu (New+), PowerToys Run plugins telemetry reduction.',
-          type: 'minor',
-          isCurrent: installed === '0.85.0',
-          downloadSize: '176.5 MB',
-          breakingChanges: false,
-        },
-        {
-          version: '0.84.0',
-          releaseDate: '2024-09-02',
-          changelog: 'Color Picker HEX uppercase format toggle, Text Extractor OCR multilingual pack support.',
-          type: 'minor',
-          downloadSize: '172.0 MB',
-          breakingChanges: false,
-        },
-      ],
-      'Obsidian.Obsidian': [
-        {
-          version: '1.7.7',
-          releaseDate: '2024-11-20',
-          changelog: 'Canvas rendering engine overhaul with large graphs, workspace tab state restoration.',
-          type: 'minor',
-          isLatest: true,
-          downloadSize: '105.0 MB',
-          breakingChanges: false,
-        },
-        {
-          version: '1.6.7',
-          releaseDate: '2024-08-10',
-          changelog: 'Sync conflict resolution modal update, PDF viewer page bookmarking fix.',
-          type: 'minor',
-          isCurrent: installed === '1.6.7',
-          downloadSize: '102.4 MB',
-          breakingChanges: false,
-        },
-        {
-          version: '1.5.12',
-          releaseDate: '2024-04-05',
-          changelog: 'Markdown table editor inline navigation, graph view color groups.',
-          type: 'minor',
-          downloadSize: '98.0 MB',
-          breakingChanges: true,
-        },
-      ],
-    };
-
-    if (customHistories[pkg.id]) {
-      return customHistories[pkg.id];
+  public async getSources(): Promise<Array<{ name: string; argument: string; isOfficial: boolean }>> {
+    if (isTauriEnvironment()) {
+      const wingetPath = storage.getSettings().wingetPath || null;
+      const raw = await invokeCommand<any[]>('winget_source_list', { wingetPath });
+      return (raw || []).map(s => ({
+        name: s.name,
+        argument: s.argument,
+        isOfficial: Boolean(s.is_official),
+      }));
     }
-
-    // Algorithmic version timeline fallback
-    const parts = latest.split('.').map(n => parseInt(n, 10) || 0);
-    const v1 = latest;
-    const v2 = parts.length > 2 ? `${parts[0]}.${parts[1]}.${Math.max(0, parts[2] - 1)}` : `${parts[0]}.${Math.max(0, (parts[1] || 1) - 1)}`;
-    const v3 = parts.length > 2 ? `${parts[0]}.${Math.max(0, parts[1] - 1)}.0` : `${Math.max(1, parts[0] - 1)}.0.0`;
-
     return [
-      {
-        version: v1,
-        releaseDate: pkg.releaseDate || '2024-11-15',
-        changelog: `Latest stable build of ${pkg.name}. Contains all security patches and performance updates.`,
-        type: 'patch',
-        isLatest: true,
-        downloadSize: pkg.formattedSize || '45 MB',
-        breakingChanges: false,
-      },
-      {
-        version: v2,
-        releaseDate: '2024-10-01',
-        changelog: `Previous release. Verified stability baseline for ${pkg.name}.`,
-        type: 'patch',
-        isCurrent: installed === v2,
-        downloadSize: pkg.formattedSize || '44 MB',
-        breakingChanges: false,
-      },
-      {
-        version: v3,
-        releaseDate: '2024-08-15',
-        changelog: `Previous minor release branch. Older system configuration format.`,
-        type: 'minor',
-        downloadSize: pkg.formattedSize || '42 MB',
-        breakingChanges: true,
-      },
+      { name: 'winget', argument: 'https://cdn.winget.microsoft.com/cache', isOfficial: true },
+      { name: 'msstore', argument: 'https://storeedgefd.dsx.mp.microsoft.com/v9.0', isOfficial: true },
     ];
   }
 
-  private delay(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+  public async addSource(name: string, url: string): Promise<boolean> {
+    if (!isTauriEnvironment()) {
+      throw new Error('Managing WinGet sources requires the Windows desktop runtime.');
+    }
+    const wingetPath = storage.getSettings().wingetPath || null;
+    const res = await invokeCommand<any>('winget_source_add', { name, url, wingetPath });
+    if (!res?.success) {
+      throw new Error(res?.stderr || res?.stdout || `winget source add exited with code ${res?.exit_code}`);
+    }
+    return true;
+  }
+
+  public async removeSource(name: string): Promise<boolean> {
+    if (!isTauriEnvironment()) {
+      throw new Error('Managing WinGet sources requires the Windows desktop runtime.');
+    }
+    const wingetPath = storage.getSettings().wingetPath || null;
+    const res = await invokeCommand<any>('winget_source_remove', { name, wingetPath });
+    if (!res?.success) {
+      throw new Error(res?.stderr || res?.stdout || `winget source remove exited with code ${res?.exit_code}`);
+    }
+    return true;
+  }
+
+  public async updateSources(): Promise<boolean> {
+    if (!isTauriEnvironment()) {
+      throw new Error('Updating WinGet sources requires the Windows desktop runtime.');
+    }
+    const wingetPath = storage.getSettings().wingetPath || null;
+    const res = await invokeCommand<any>('winget_source_update', { wingetPath });
+    if (!res?.success) {
+      throw new Error(res?.stderr || res?.stdout || `winget source update exited with code ${res?.exit_code}`);
+    }
+    return true;
+  }
+
+  public async resetSources(): Promise<boolean> {
+    if (!isTauriEnvironment()) {
+      throw new Error('Resetting WinGet sources requires the Windows desktop runtime.');
+    }
+    const wingetPath = storage.getSettings().wingetPath || null;
+    const res = await invokeCommand<any>('winget_source_reset', { wingetPath });
+    if (!res?.success) {
+      throw new Error(res?.stderr || res?.stdout || `winget source reset exited with code ${res?.exit_code}`);
+    }
+    return true;
+  }
+
+  public async fetchPackageVersions(pkg: Package): Promise<PackageVersionInfo[]> {
+    if (isTauriEnvironment() && this.isValidPackageId(pkg.id) && !pkg.isExternal) {
+      try {
+        const wingetPath = storage.getSettings().wingetPath || null;
+        const versions = await invokeCommand<string[]>('winget_show_versions', {
+          packageId: pkg.id,
+          wingetPath,
+        });
+        if (versions && versions.length > 0) {
+          return versions.map((ver, idx) => ({
+            version: ver,
+            releaseDate: idx === 0 && pkg.releaseDate ? pkg.releaseDate : 'Indexed in WinGet',
+            changelog:
+              ver === pkg.installedVersion
+                ? 'Currently installed version on this system.'
+                : idx === 0
+                ? `Latest published version (${ver}).`
+                : `Available version ${ver} in WinGet manifest index.`,
+            type: 'patch',
+            isLatest: idx === 0,
+            isCurrent: pkg.installedVersion === ver,
+            downloadSize: pkg.formattedDownloadSize || pkg.formattedSize,
+          }));
+        }
+      } catch (err) {
+        console.warn(`[WinGet Versions] Could not load --versions for ${pkg.id}:`, err);
+      }
+    }
+
+    const latest = pkg.latestVersion || pkg.version;
+    const installed = pkg.installedVersion;
+    const result: PackageVersionInfo[] = [
+      {
+        version: latest,
+        releaseDate: pkg.releaseDate || 'Not reported',
+        changelog: `Published version in WinGet catalog (${latest}).`,
+        type: 'patch',
+        isLatest: true,
+        isCurrent: installed === latest,
+        downloadSize: pkg.formattedDownloadSize || pkg.formattedSize,
+      },
+    ];
+
+    if (installed && installed !== latest) {
+      result.push({
+        version: installed,
+        releaseDate: pkg.installedDate || 'Installed locally',
+        changelog: 'Currently installed version on local system.',
+        type: 'patch',
+        isCurrent: true,
+        downloadSize: pkg.formattedSize,
+      });
+    }
+
+    return result;
+  }
+
+  public async sendNotification(title: string, body: string): Promise<void> {
+    const settings = storage.getSettings();
+    if (!settings.desktopNotifications) return;
+
+    if (isTauriEnvironment()) {
+      await tryInvokeCommand('send_desktop_notification', { title, body });
+    } else if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+      new Notification(title, { body });
+    }
   }
 }
 

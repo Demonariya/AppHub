@@ -8,7 +8,10 @@ pub enum AppHubError {
     #[error("Invalid package identifier: {0}")]
     InvalidPackageId(String),
 
-    #[error("WinGet command execution failed with exit code: {code:?}, stderr: {stderr}")]
+    #[error("Another operation is already running for package: {0}")]
+    DuplicateOperation(String),
+
+    #[error("WinGet command execution failed with exit code {code:?}: {stderr}")]
     ExecutionFailed {
         code: Option<i32>,
         stderr: String,
@@ -16,6 +19,12 @@ pub enum AppHubError {
 
     #[error("Process was cancelled by user")]
     OperationCancelled,
+
+    #[error("Operation timed out after {0} seconds")]
+    TimeoutError(u64),
+
+    #[error("Notification error: {0}")]
+    NotificationError(String),
 
     #[error("Database error: {0}")]
     DatabaseError(#[from] rusqlite::Error),

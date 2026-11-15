@@ -1,21 +1,29 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { AppSettings, WinGetEnvironment, Architecture } from '../types';
 import {
-  Settings,
+  Sliders,
   Palette,
-  Terminal,
-  Shield,
-  Download,
+  AppWindow,
+  HardDriveDownload,
   Bell,
-  HardDrive,
+  Terminal,
   Keyboard,
   Info,
   RotateCcw,
-  Check,
+  ShieldCheck,
+  RefreshCw,
+  AlertTriangle,
   ExternalLink,
-  Cpu,
+  Trash2,
 } from 'lucide-react';
-import { DEFAULT_SETTINGS, storage } from '../services/storage';
+import {
+  PageHeader,
+  Button,
+  CollapsibleSection,
+  ConfirmationDialog,
+  StatusBadge,
+  useToast,
+} from '../components/ui';
 
 interface SettingsPageProps {
   settings: AppSettings;
@@ -23,7 +31,19 @@ interface SettingsPageProps {
   onUpdateSettings: (settings: Partial<AppSettings>) => void;
   onResetDefaults: () => void;
   onClearCache: () => void;
+  onRefreshEnvironment?: (explicitPath?: string) => Promise<void> | void;
+  isRefreshingEnvironment?: boolean;
 }
+
+type SettingsSectionId =
+  | 'general'
+  | 'appearance'
+  | 'applications'
+  | 'downloads'
+  | 'notifications'
+  | 'diagnostics'
+  | 'shortcuts'
+  | 'about';
 
 export const SettingsPage: React.FC<SettingsPageProps> = ({
   settings,
@@ -31,352 +51,592 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   onUpdateSettings,
   onResetDefaults,
   onClearCache,
+  onRefreshEnvironment,
+  isRefreshingEnvironment = false,
 }) => {
-  const [activeTab, setActiveTab] = useState<
-    'appearance' | 'installation' | 'updates' | 'diagnostics' | 'shortcuts' | 'about'
-  >('appearance');
-  const [savedAlert, setSavedAlert] = useState(false);
+  const { showToast } = useToast();
+  const [activeTab, setActiveTab] = useState<SettingsSectionId>('appearance');
+  const [wingetPathDraft, setWingetPathDraft] = useState(settings.wingetPath || '');
+  const [confirmResetOpen, setConfirmResetOpen] = useState(false);
+  const [confirmClearCacheOpen, setConfirmClearCacheOpen] = useState(false);
 
-  const handleToggle = (key: keyof AppSettings) => {
+  useEffect(() => {
+    setWingetPathDraft(settings.wingetPath || '');
+  }, [settings.wingetPath]);
+
+  const handleToggle = (key: keyof AppSettings, label?: string) => {
     const updated = !settings[key];
     onUpdateSettings({ [key]: updated });
-    triggerSaved();
+    showToast({
+      title: label ? `${label} ${updated ? 'enabled' : 'disabled'}` : 'Preference saved',
+      tone: 'success',
+    });
   };
 
-  const triggerSaved = () => {
-    setSavedAlert(true);
-    setTimeout(() => setSavedAlert(false), 2000);
+  const handleApplyWingetPath = async () => {
+    const cleaned = wingetPathDraft.trim();
+    onUpdateSettings({ wingetPath: cleaned });
+    if (onRefreshEnvironment) {
+      await onRefreshEnvironment(cleaned);
+    }
+    showToast({
+      title: cleaned ? 'Custom WinGet Path Saved' : 'Restored Auto-Detect Path',
+      tone: 'success',
+    });
   };
+
+  const navTabs: { id: SettingsSectionId; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
+    { id: 'general', label: 'General & Startup', icon: Sliders },
+    { id: 'appearance', label: 'Appearance', icon: Palette },
+    { id: 'applications', label: 'Applications & WinGet', icon: AppWindow },
+    { id: 'downloads', label: 'Downloads & Cache', icon: HardDriveDownload },
+    { id: 'notifications', label: 'Notifications & Privacy', icon: Bell },
+    { id: 'diagnostics', label: 'Diagnostics & CLI', icon: Terminal },
+    { id: 'shortcuts', label: 'Keyboard Shortcuts', icon: Keyboard },
+    { id: 'about', label: 'About AppHub', icon: Info },
+  ];
 
   return (
-    <div className="p-4 sm:p-8 max-w-7xl mx-auto space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-xl font-bold text-neutral-100">Settings & System Preferences</h1>
-          <p className="text-xs text-neutral-400 mt-1">
-            Configure AppHub behavior, WinGet CLI execution parameters, and UI preferences.
-          </p>
-        </div>
+    <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-6 animate-page-in">
+      <PageHeader
+        title="Settings"
+        subtitle="Configure AppHub appearance, WinGet CLI behavior, download concurrency, and diagnostics."
+        actions={
+          <Button
+            size="md"
+            variant="danger"
+            leftIcon={<RotateCcw className="w-3.5 h-3.5" />}
+            onClick={() => setConfirmResetOpen(true)}
+          >
+            Reset All to Defaults
+          </Button>
+        }
+      />
 
-        <button
-          onClick={onResetDefaults}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-neutral-400 hover:text-white bg-neutral-900 border border-neutral-800 hover:border-neutral-700 rounded-lg transition-colors"
-        >
-          <RotateCcw className="w-3.5 h-3.5" />
-          <span>Reset All to Defaults</span>
-        </button>
-      </div>
-
-      {savedAlert && (
-        <div className="p-2.5 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-xs text-emerald-400 flex items-center gap-2">
-          <Check className="w-4 h-4" />
-          <span>Preferences updated and persisted.</span>
-        </div>
-      )}
-
-      {/* Main Settings Layout: Tab List + Content */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-        {/* Nav tabs */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:flex md:flex-col gap-1.5">
-          {[
-            { id: 'appearance', label: 'Appearance', icon: Palette },
-            { id: 'installation', label: 'Installation & UAC', icon: Download },
-            { id: 'updates', label: 'Updates & Telemetry', icon: Bell },
-            { id: 'shortcuts', label: 'Keyboard Shortcuts', icon: Keyboard },
-            { id: 'diagnostics', label: 'WinGet Diagnostics', icon: Terminal },
-            { id: 'about', label: 'About AppHub', icon: Info },
-          ].map(tab => {
+        {/* Settings Navigation */}
+        <nav
+          aria-label="Settings sections"
+          className="grid grid-cols-2 sm:grid-cols-4 md:flex md:flex-col gap-1"
+        >
+          {navTabs.map(tab => {
             const Icon = tab.icon;
             const isActive = activeTab === tab.id;
             return (
               <button
                 key={tab.id}
-                onClick={() => setActiveTab(tab.id as any)}
-                className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-medium text-left transition-colors ${
+                type="button"
+                onClick={() => setActiveTab(tab.id)}
+                className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-[8px] text-xs text-left transition-colors cursor-pointer ${
                   isActive
-                    ? 'bg-neutral-800 text-white font-semibold'
-                    : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900'
+                    ? 'bg-[var(--surface-active)] text-[var(--text-primary)] font-semibold'
+                    : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)] font-medium'
                 }`}
               >
-                <Icon className={`w-4 h-4 ${isActive ? 'text-sky-400' : 'text-neutral-500'}`} />
-                <span>{tab.label}</span>
+                <Icon
+                  className={`w-4 h-4 shrink-0 ${
+                    isActive ? 'text-[var(--accent-primary)]' : 'text-[var(--text-muted)]'
+                  }`}
+                />
+                <span className="truncate">{tab.label}</span>
               </button>
             );
           })}
-        </div>
+        </nav>
 
-        {/* Content Pane */}
-        <div className="md:col-span-3 bg-neutral-900/60 border border-neutral-800/80 rounded-2xl p-6 space-y-6">
-          {/* Appearance Tab */}
-          {activeTab === 'appearance' && (
-            <div className="space-y-6">
-              <h2 className="text-sm font-semibold text-neutral-100 pb-2 border-b border-neutral-800">
-                Visual Appearance & Density
+        {/* Active Panel */}
+        <div className="md:col-span-3 bg-[var(--surface-panel)] border border-[var(--border-subtle)] rounded-[12px] p-6 space-y-6 shadow-[var(--shadow-card)]">
+          {/* General & Startup */}
+          {activeTab === 'general' && (
+            <div className="space-y-5">
+              <h2 className="text-sm font-semibold text-[var(--text-primary)] pb-3 border-b border-[var(--border-subtle)]">
+                General &amp; Startup Behavior
               </h2>
 
-              <div className="space-y-4">
+              <label className="flex items-start gap-3 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={settings.checkUpdatesOnStartup}
+                  onChange={() => handleToggle('checkUpdatesOnStartup', 'Startup update scan')}
+                  className="w-4 h-4 rounded accent-[var(--accent-primary)] mt-0.5 cursor-pointer"
+                />
                 <div>
-                  <label className="text-xs text-neutral-300 block mb-2 font-medium">Color Theme</label>
-                  <div className="grid grid-cols-3 gap-3">
-                    {[
-                      { id: 'dark', label: 'Dark Graphite (Default)' },
-                      { id: 'light', label: 'Fluent Light' },
-                      { id: 'system', label: 'System Default' },
-                    ].map(t => (
-                      <button
-                        key={t.id}
-                        onClick={() => {
-                          onUpdateSettings({ theme: t.id as any });
-                          triggerSaved();
-                        }}
-                        className={`p-3 rounded-xl border text-xs text-left transition-all ${
-                          settings.theme === t.id
-                            ? 'border-sky-500 bg-sky-950/20 text-white font-semibold'
-                            : 'border-neutral-800 hover:border-neutral-700 text-neutral-400'
-                        }`}
-                      >
-                        {t.label}
-                      </button>
-                    ))}
+                  <div className="text-xs font-semibold text-[var(--text-primary)]">
+                    Scan for Updates on Launch
+                  </div>
+                  <div className="text-xs text-[var(--text-secondary)] mt-0.5 leading-relaxed">
+                    Runs <code className="font-mono text-[var(--accent-primary)]">winget upgrade</code> automatically when AppHub starts in desktop mode.
                   </div>
                 </div>
+              </label>
 
-                <div className="pt-4 border-t border-neutral-800">
-                  <label className="text-xs text-neutral-300 block mb-2 font-medium">Layout Density</label>
-                  <div className="grid grid-cols-2 gap-3">
-                    {[
-                      { id: 'comfortable', label: 'Comfortable (Standard spacing)' },
-                      { id: 'compact', label: 'Compact (High information density)' },
-                    ].map(d => (
+              <label className="flex items-start gap-3 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={settings.requireConfirmation}
+                  onChange={() => handleToggle('requireConfirmation', 'Confirmation prompt')}
+                  className="w-4 h-4 rounded accent-[var(--accent-primary)] mt-0.5 cursor-pointer"
+                />
+                <div>
+                  <div className="text-xs font-semibold text-[var(--text-primary)]">
+                    Confirm Before Installing or Uninstalling
+                  </div>
+                  <div className="text-xs text-[var(--text-secondary)] mt-0.5 leading-relaxed">
+                    Opens a confirmation dialog showing target version, WinGet flags, and optional custom install directory before execution.
+                  </div>
+                </div>
+              </label>
+            </div>
+          )}
+
+          {/* Appearance */}
+          {activeTab === 'appearance' && (
+            <div className="space-y-6">
+              <h2 className="text-sm font-semibold text-[var(--text-primary)] pb-3 border-b border-[var(--border-subtle)]">
+                Visual Appearance &amp; Density
+              </h2>
+
+              <div>
+                <div className="text-xs font-medium text-[var(--text-primary)] mb-2">
+                  Color Theme
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {[
+                    { id: 'dark', label: 'Dark Graphite', desc: 'Restrained dark desktop surface' },
+                    { id: 'light', label: 'Fluent Light', desc: 'High-clarity daylight palette' },
+                    { id: 'system', label: 'Match Windows', desc: 'Follow OS theme preference' },
+                  ].map(t => {
+                    const selected = settings.theme === t.id;
+                    return (
                       <button
-                        key={d.id}
+                        key={t.id}
+                        type="button"
                         onClick={() => {
-                          onUpdateSettings({ density: d.id as any });
-                          triggerSaved();
+                          onUpdateSettings({ theme: t.id as AppSettings['theme'] });
+                          showToast({ title: `Theme set to ${t.label}`, tone: 'success' });
                         }}
-                        className={`p-3 rounded-xl border text-xs text-left transition-all ${
-                          settings.density === d.id
-                            ? 'border-sky-500 bg-sky-950/20 text-white font-semibold'
-                            : 'border-neutral-800 hover:border-neutral-700 text-neutral-400'
+                        className={`p-3.5 rounded-[10px] border text-left transition-all cursor-pointer ${
+                          selected
+                            ? 'border-[var(--accent-primary)] bg-[var(--accent-soft)]'
+                            : 'border-[var(--border-subtle)] bg-[var(--surface-subtle)] hover:border-[var(--border-strong)]'
                         }`}
                       >
-                        {d.label}
+                        <div className="text-xs font-semibold text-[var(--text-primary)]">
+                          {t.label}
+                        </div>
+                        <div className="text-[11px] text-[var(--text-secondary)] mt-0.5">
+                          {t.desc}
+                        </div>
                       </button>
-                    ))}
-                  </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="pt-4 border-t border-[var(--border-subtle)]">
+                <div className="text-xs font-medium text-[var(--text-primary)] mb-2">
+                  Layout Density
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {[
+                    {
+                      id: 'comfortable',
+                      label: 'Comfortable',
+                      desc: 'Standard spacing for catalog browsing',
+                    },
+                    {
+                      id: 'compact',
+                      label: 'Compact',
+                      desc: 'Higher information density for power users',
+                    },
+                  ].map(d => {
+                    const selected = settings.density === d.id;
+                    return (
+                      <button
+                        key={d.id}
+                        type="button"
+                        onClick={() => {
+                          onUpdateSettings({ density: d.id as AppSettings['density'] });
+                          showToast({ title: `Density set to ${d.label}`, tone: 'success' });
+                        }}
+                        className={`p-3.5 rounded-[10px] border text-left transition-all cursor-pointer ${
+                          selected
+                            ? 'border-[var(--accent-primary)] bg-[var(--accent-soft)]'
+                            : 'border-[var(--border-subtle)] bg-[var(--surface-subtle)] hover:border-[var(--border-strong)]'
+                        }`}
+                      >
+                        <div className="text-xs font-semibold text-[var(--text-primary)]">
+                          {d.label}
+                        </div>
+                        <div className="text-[11px] text-[var(--text-secondary)] mt-0.5">
+                          {d.desc}
+                        </div>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             </div>
           )}
 
-          {/* Installation & UAC Tab */}
-          {activeTab === 'installation' && (
-            <div className="space-y-6">
-              <h2 className="text-sm font-semibold text-neutral-100 pb-2 border-b border-neutral-800">
-                WinGet Process Execution & UAC
+          {/* Applications & WinGet */}
+          {activeTab === 'applications' && (
+            <div className="space-y-5">
+              <h2 className="text-sm font-semibold text-[var(--text-primary)] pb-3 border-b border-[var(--border-subtle)]">
+                Applications &amp; WinGet Execution
               </h2>
 
-              <div className="space-y-4">
-                <label className="flex items-start gap-3 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={settings.silentInstall}
-                    onChange={() => handleToggle('silentInstall')}
-                    className="w-4 h-4 rounded bg-neutral-800 border-neutral-700 text-sky-500 focus:ring-0 mt-0.5 cursor-pointer"
-                  />
+              <label className="flex items-start gap-3 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={settings.silentInstall}
+                  onChange={() => handleToggle('silentInstall', 'Silent installation')}
+                  className="w-4 h-4 rounded accent-[var(--accent-primary)] mt-0.5 cursor-pointer"
+                />
+                <div>
+                  <div className="text-xs font-semibold text-[var(--text-primary)]">
+                    Silent Installation (<code className="font-mono text-[var(--accent-primary)]">--silent</code>)
+                  </div>
+                  <div className="text-xs text-[var(--text-secondary)] mt-0.5">
+                    Suppresses interactive setup wizards when supported by the package installer.
+                  </div>
+                </div>
+              </label>
+
+              <label className="flex items-start gap-3 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={settings.autoAcceptAgreements}
+                  onChange={() => handleToggle('autoAcceptAgreements', 'Auto-accept agreements')}
+                  className="w-4 h-4 rounded accent-[var(--accent-primary)] mt-0.5 cursor-pointer"
+                />
+                <div>
+                  <div className="text-xs font-semibold text-[var(--text-primary)]">
+                    Auto-Accept Package &amp; Source Agreements
+                  </div>
+                  <div className="text-xs text-[var(--text-secondary)] mt-0.5">
+                    Passes <code className="font-mono text-[var(--accent-primary)]">--accept-package-agreements --accept-source-agreements</code> to prevent CLI hangs.
+                  </div>
+                </div>
+              </label>
+
+              <div className="pt-4 border-t border-[var(--border-subtle)]">
+                <label className="text-xs font-medium text-[var(--text-primary)] block mb-1.5">
+                  Preferred Package Architecture
+                </label>
+                <select
+                  value={settings.preferredArchitecture}
+                  onChange={e => {
+                    onUpdateSettings({ preferredArchitecture: e.target.value as Architecture });
+                    showToast({ title: 'Architecture preference updated', tone: 'success' });
+                  }}
+                  className="w-full sm:w-72 h-9 px-3 bg-[var(--surface-input)] border border-[var(--border-subtle)] rounded-[8px] text-xs font-mono text-[var(--text-primary)] cursor-pointer"
+                >
+                  <option value="x64">x64 (AMD64 64-bit)</option>
+                  <option value="arm64">ARM64 (Windows on ARM)</option>
+                  <option value="x86">x86 (32-bit Legacy)</option>
+                </select>
+              </div>
+
+              <div className="pt-4 border-t border-[var(--border-subtle)] space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                   <div>
-                    <div className="text-xs font-medium text-neutral-200">Silent Installation</div>
-                    <div className="text-[11px] text-neutral-400">
-                      Appends <code className="text-sky-400">--silent</code> to WinGet arguments to minimize background setup wizards.
+                    <div className="text-xs font-semibold text-[var(--text-primary)]">
+                      Default Custom Install Directory
+                    </div>
+                    <div className="text-xs text-[var(--text-secondary)]">
+                      Automatically pass <code className="font-mono text-[var(--accent-primary)]">--location</code> during installations.
                     </div>
                   </div>
-                </label>
+                  <label className="flex items-center gap-2 text-xs text-[var(--text-primary)] cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={settings.useCustomLocationByDefault || false}
+                      onChange={() =>
+                        handleToggle('useCustomLocationByDefault', 'Default custom directory')
+                      }
+                      className="w-4 h-4 rounded accent-[var(--accent-primary)] cursor-pointer"
+                    />
+                    <span className="font-mono text-[11px]">Enable by default</span>
+                  </label>
+                </div>
 
-                <label className="flex items-start gap-3 cursor-pointer select-none">
+                <div className="flex flex-wrap items-center gap-2">
                   <input
-                    type="checkbox"
-                    checked={settings.requireConfirmation}
-                    onChange={() => handleToggle('requireConfirmation')}
-                    className="w-4 h-4 rounded bg-neutral-800 border-neutral-700 text-sky-500 focus:ring-0 mt-0.5 cursor-pointer"
+                    type="text"
+                    value={settings.defaultCustomLocation || ''}
+                    onChange={e => onUpdateSettings({ defaultCustomLocation: e.target.value })}
+                    placeholder="e.g. D:\Software or C:\Apps"
+                    className="flex-1 min-w-[200px] h-9 px-3 bg-[var(--surface-input)] border border-[var(--border-subtle)] focus:border-[var(--border-focus)] rounded-[8px] text-xs font-mono text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none"
                   />
-                  <div>
-                    <div className="text-xs font-medium text-neutral-200">Require UAC Authorization Dialog</div>
-                    <div className="text-[11px] text-neutral-400">
-                      Prompt confirmation explaining administrative privileges before executing installers that modify system directories.
-                    </div>
-                  </div>
-                </label>
-
-                <label className="flex items-start gap-3 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={settings.autoAcceptAgreements}
-                    onChange={() => handleToggle('autoAcceptAgreements')}
-                    className="w-4 h-4 rounded bg-neutral-800 border-neutral-700 text-sky-500 focus:ring-0 mt-0.5 cursor-pointer"
-                  />
-                  <div>
-                    <div className="text-xs font-medium text-neutral-200">Auto-Accept Package & Source Agreements</div>
-                    <div className="text-[11px] text-neutral-400">
-                      Passes <code className="text-sky-400">--accept-package-agreements --accept-source-agreements</code> to avoid interactive CLI prompts.
-                    </div>
-                  </div>
-                </label>
-
-                <div className="pt-4 border-t border-neutral-800">
-                  <label className="text-xs text-neutral-300 block mb-1 font-medium">Preferred Target Architecture</label>
-                  <select
-                    value={settings.preferredArchitecture}
-                    onChange={e => {
-                      onUpdateSettings({ preferredArchitecture: e.target.value as Architecture });
-                      triggerSaved();
+                  <Button
+                    size="md"
+                    variant="secondary"
+                    onClick={() => {
+                      onUpdateSettings({ defaultCustomLocation: 'D:\\Software' });
+                      showToast({ title: 'Default location set to D:\\Software', tone: 'success' });
                     }}
-                    className="bg-neutral-950 border border-neutral-800 text-xs text-neutral-200 rounded-lg px-3 py-2 font-mono"
                   >
-                    <option value="x64">x64 (AMD64 64-bit)</option>
-                    <option value="arm64">ARM64 (Qualcomm Snapdragon / Windows on ARM)</option>
-                    <option value="x86">x86 (32-bit Legacy)</option>
+                    D:\Software
+                  </Button>
+                  <Button
+                    size="md"
+                    variant="secondary"
+                    onClick={() => {
+                      onUpdateSettings({ defaultCustomLocation: 'C:\\Program Files' });
+                      showToast({
+                        title: 'Default location set to C:\\Program Files',
+                        tone: 'success',
+                      });
+                    }}
+                  >
+                    C:\Program Files
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Downloads & Cache */}
+          {activeTab === 'downloads' && (
+            <div className="space-y-6">
+              <h2 className="text-sm font-semibold text-[var(--text-primary)] pb-3 border-b border-[var(--border-subtle)]">
+                Downloads &amp; Local Cache
+              </h2>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="text-xs font-medium text-[var(--text-primary)] block mb-1.5">
+                    Concurrent Installations Limit
+                  </label>
+                  <select
+                    value={settings.maxConcurrentDownloads || 1}
+                    onChange={e => {
+                      onUpdateSettings({ maxConcurrentDownloads: Number(e.target.value) });
+                      showToast({ title: 'Concurrency limit updated', tone: 'success' });
+                    }}
+                    className="w-full h-9 px-3 bg-[var(--surface-input)] border border-[var(--border-subtle)] rounded-[8px] text-xs font-mono text-[var(--text-primary)] cursor-pointer"
+                  >
+                    <option value={1}>1 task at a time (Safest for MSI locks)</option>
+                    <option value={2}>2 parallel tasks</option>
+                    <option value={3}>3 parallel tasks</option>
+                    <option value={4}>4 parallel tasks</option>
                   </select>
                 </div>
 
-                <div className="pt-4 border-t border-neutral-800 space-y-3">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                    <div>
-                      <div className="text-xs font-medium text-neutral-200">Default Custom Installation Directory</div>
-                      <div className="text-[11px] text-neutral-400">
-                        Automatically pass <code className="text-sky-400">--location &lt;path&gt;</code> to WinGet installations.
-                      </div>
-                    </div>
-                    <label className="flex items-center gap-2 text-xs text-neutral-300 cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        checked={settings.useCustomLocationByDefault || false}
-                        onChange={() => handleToggle('useCustomLocationByDefault')}
-                        className="w-4 h-4 rounded bg-neutral-800 border-neutral-700 text-sky-500 focus:ring-0 cursor-pointer"
-                      />
-                      <span className="text-[11px] font-mono text-neutral-300">Enable by default</span>
-                    </label>
-                  </div>
+                <div>
+                  <label className="text-xs font-medium text-[var(--text-primary)] block mb-1.5">
+                    Operation Log Retention
+                  </label>
+                  <select
+                    value={settings.logRetentionDays || 30}
+                    onChange={e => {
+                      onUpdateSettings({ logRetentionDays: Number(e.target.value) });
+                      showToast({ title: 'Retention period updated', tone: 'success' });
+                    }}
+                    className="w-full h-9 px-3 bg-[var(--surface-input)] border border-[var(--border-subtle)] rounded-[8px] text-xs font-mono text-[var(--text-primary)] cursor-pointer"
+                  >
+                    <option value={7}>7 days</option>
+                    <option value={30}>30 days (Default)</option>
+                    <option value={90}>90 days</option>
+                  </select>
+                </div>
+              </div>
 
-                  <div className="flex flex-wrap items-center gap-2">
-                    <input
-                      type="text"
-                      value={settings.defaultCustomLocation || ''}
-                      onChange={e => {
-                        onUpdateSettings({ defaultCustomLocation: e.target.value });
-                        triggerSaved();
-                      }}
-                      placeholder="e.g. D:\Software or C:\Apps"
-                      className="flex-1 min-w-[200px] px-3 py-2 bg-neutral-950 border border-neutral-800 rounded-lg text-xs font-mono text-neutral-200 placeholder-neutral-500 focus:outline-none focus:border-sky-500"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onUpdateSettings({ defaultCustomLocation: 'D:\\Software' });
-                        triggerSaved();
-                      }}
-                      className="px-2.5 py-2 text-xs font-mono bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 text-neutral-300 rounded-lg transition-colors"
-                    >
-                      D:\Software
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onUpdateSettings({ defaultCustomLocation: 'C:\\Program Files' });
-                        triggerSaved();
-                      }}
-                      className="px-2.5 py-2 text-xs font-mono bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 text-neutral-300 rounded-lg transition-colors"
-                    >
-                      C:\Program Files
-                    </button>
+              <div className="pt-4 border-t border-[var(--border-subtle)] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <div className="text-xs font-semibold text-[var(--text-primary)]">
+                    Clear Package &amp; Icon Cache
                   </div>
+                  <div className="text-xs text-[var(--text-secondary)] mt-0.5">
+                    Invalidates cached package metadata and icons, then re-syncs from WinGet.
+                  </div>
+                </div>
+                <Button
+                  size="md"
+                  variant="secondary"
+                  leftIcon={<Trash2 className="w-3.5 h-3.5" />}
+                  onClick={() => setConfirmClearCacheOpen(true)}
+                >
+                  Clear Cache
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {/* Notifications & Privacy */}
+          {activeTab === 'notifications' && (
+            <div className="space-y-6">
+              <h2 className="text-sm font-semibold text-[var(--text-primary)] pb-3 border-b border-[var(--border-subtle)]">
+                Notifications &amp; Privacy
+              </h2>
+
+              <label className="flex items-start gap-3 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={settings.desktopNotifications}
+                  onChange={() => handleToggle('desktopNotifications', 'Desktop notifications')}
+                  className="w-4 h-4 rounded accent-[var(--accent-primary)] mt-0.5 cursor-pointer"
+                />
+                <div>
+                  <div className="text-xs font-semibold text-[var(--text-primary)]">
+                    Windows Desktop Notifications
+                  </div>
+                  <div className="text-xs text-[var(--text-secondary)] mt-0.5">
+                    Send native desktop notifications when package installations, updates, or removals finish.
+                  </div>
+                </div>
+              </label>
+
+              <div className="p-4 rounded-[10px] bg-[var(--surface-subtle)] border border-[var(--border-subtle)] flex items-start gap-3">
+                <ShieldCheck className="w-4 h-4 text-[var(--status-success-fg)] shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <div className="text-xs font-semibold text-[var(--text-primary)]">
+                    Local-First Privacy Guarantee
+                  </div>
+                  <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
+                    AppHub includes zero telemetry SDKs, analytics trackers, or remote accounts. All preferences, collections, and operation logs remain strictly on your device in local SQLite storage.
+                  </p>
                 </div>
               </div>
             </div>
           )}
 
-          {/* Updates & Telemetry Tab */}
-          {activeTab === 'updates' && (
+          {/* Diagnostics & Advanced CLI */}
+          {activeTab === 'diagnostics' && (
             <div className="space-y-6">
-              <h2 className="text-sm font-semibold text-neutral-100 pb-2 border-b border-neutral-800">
-                Update Scans & Telemetry
-              </h2>
-
-              <div className="space-y-4">
-                <label className="flex items-start gap-3 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={settings.checkUpdatesOnStartup}
-                    onChange={() => handleToggle('checkUpdatesOnStartup')}
-                    className="w-4 h-4 rounded bg-neutral-800 border-neutral-700 text-sky-500 focus:ring-0 mt-0.5 cursor-pointer"
-                  />
-                  <div>
-                    <div className="text-xs font-medium text-neutral-200">Scan for Updates on App Launch</div>
-                    <div className="text-[11px] text-neutral-400">
-                      Automatically queries WinGet metadata feeds when AppHub opens to flag outdated applications.
-                    </div>
-                  </div>
-                </label>
-
-                <label className="flex items-start gap-3 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={settings.desktopNotifications}
-                    onChange={() => handleToggle('desktopNotifications')}
-                    className="w-4 h-4 rounded bg-neutral-800 border-neutral-700 text-sky-500 focus:ring-0 mt-0.5 cursor-pointer"
-                  />
-                  <div>
-                    <div className="text-xs font-medium text-neutral-200">Windows Desktop Notifications</div>
-                    <div className="text-[11px] text-neutral-400">
-                      Show native system toast notifications when software installations or batch updates complete.
-                    </div>
-                  </div>
-                </label>
-
-                <label className="flex items-start gap-3 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={settings.telemetryDisabled}
-                    onChange={() => handleToggle('telemetryDisabled')}
-                    className="w-4 h-4 rounded bg-neutral-800 border-neutral-700 text-sky-500 focus:ring-0 mt-0.5 cursor-pointer"
-                  />
-                  <div>
-                    <div className="text-xs font-medium text-neutral-200">Strict Privacy / Zero Telemetry</div>
-                    <div className="text-[11px] text-neutral-400">
-                      Ensures zero analytical tracking. Only direct queries to official WinGet sources are performed.
-                    </div>
-                  </div>
-                </label>
+              <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)]">
+                <h2 className="text-sm font-semibold text-[var(--text-primary)]">
+                  WinGet Host Diagnostics
+                </h2>
+                {onRefreshEnvironment && (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    loading={isRefreshingEnvironment}
+                    leftIcon={<RefreshCw className="w-3.5 h-3.5" />}
+                    onClick={() => onRefreshEnvironment()}
+                  >
+                    Re-check Host
+                  </Button>
+                )}
               </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs font-mono">
+                <div className="p-3.5 bg-[var(--surface-subtle)] rounded-[10px] border border-[var(--border-subtle)]">
+                  <div className="text-[var(--text-muted)] mb-1">WinGet CLI Status</div>
+                  <StatusBadge
+                    status={environment.isInstalled ? 'completed' : 'cancelled'}
+                    label={environment.isInstalled ? 'Installed & Ready' : 'Not Detected'}
+                    compact
+                  />
+                </div>
+
+                <div className="p-3.5 bg-[var(--surface-subtle)] rounded-[10px] border border-[var(--border-subtle)]">
+                  <div className="text-[var(--text-muted)]">WinGet Version</div>
+                  <div className="text-[var(--text-primary)] font-semibold mt-1">
+                    {environment.version}
+                  </div>
+                </div>
+
+                <div className="p-3.5 bg-[var(--surface-subtle)] rounded-[10px] border border-[var(--border-subtle)] sm:col-span-2">
+                  <div className="text-[var(--text-muted)]">Resolved Executable</div>
+                  <div className="text-[var(--text-primary)] mt-1 truncate">
+                    {environment.path || 'Not resolved'}
+                  </div>
+                </div>
+
+                <div className="p-3.5 bg-[var(--surface-subtle)] rounded-[10px] border border-[var(--border-subtle)]">
+                  <div className="text-[var(--text-muted)]">Operating System</div>
+                  <div className="text-[var(--text-primary)] mt-1">{environment.windowsVersion}</div>
+                </div>
+
+                <div className="p-3.5 bg-[var(--surface-subtle)] rounded-[10px] border border-[var(--border-subtle)]">
+                  <div className="text-[var(--text-muted)]">System Architecture</div>
+                  <div className="text-[var(--text-primary)] uppercase mt-1">
+                    {environment.architecture}
+                  </div>
+                </div>
+              </div>
+
+              {!environment.isInstalled && (
+                <div className="p-4 rounded-[10px] bg-[var(--status-warning-bg)] border border-[var(--status-warning-border)] space-y-2 text-xs">
+                  <div className="flex items-center gap-2 text-[var(--status-warning-fg)] font-semibold">
+                    <AlertTriangle className="w-4 h-4" />
+                    <span>WinGet Remediation</span>
+                  </div>
+                  <p className="text-[var(--text-primary)] leading-relaxed">
+                    Install or update Microsoft App Installer from Microsoft Store or{' '}
+                    <a
+                      href="https://aka.ms/getwinget"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-[var(--accent-primary)] hover:underline inline-flex items-center gap-1"
+                    >
+                      aka.ms/getwinget <ExternalLink className="w-3 h-3" />
+                    </a>
+                    .
+                  </p>
+                  {environment.error && (
+                    <div className="text-[11px] font-mono text-[var(--status-warning-fg)]">
+                      {environment.error}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <CollapsibleSection
+                title="Advanced: Custom WinGet Executable Override"
+                subtitle="Leave blank to auto-detect winget.exe from WindowsApps or PATH"
+                icon={<Terminal className="w-4 h-4" />}
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="text"
+                    value={wingetPathDraft}
+                    onChange={e => setWingetPathDraft(e.target.value)}
+                    placeholder="Auto-detect (e.g. C:\Users\...\WindowsApps\winget.exe)"
+                    className="flex-1 min-w-[220px] h-9 px-3 bg-[var(--surface-input)] border border-[var(--border-subtle)] focus:border-[var(--border-focus)] rounded-[8px] text-xs font-mono text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none"
+                  />
+                  <Button
+                    size="md"
+                    variant="primary"
+                    loading={isRefreshingEnvironment}
+                    onClick={handleApplyWingetPath}
+                  >
+                    Apply &amp; Test Path
+                  </Button>
+                </div>
+              </CollapsibleSection>
             </div>
           )}
 
-          {/* Keyboard Shortcuts Tab */}
+          {/* Keyboard Shortcuts */}
           {activeTab === 'shortcuts' && (
             <div className="space-y-4">
-              <h2 className="text-sm font-semibold text-neutral-100 pb-2 border-b border-neutral-800">
-                Global Keyboard Shortcuts
+              <h2 className="text-sm font-semibold text-[var(--text-primary)] pb-3 border-b border-[var(--border-subtle)]">
+                Keyboard Shortcuts
               </h2>
 
-              <div className="divide-y divide-neutral-800/80">
+              <div className="divide-y divide-[var(--border-subtle)]">
                 {[
-                  { keys: ['Ctrl', 'K'], desc: 'Open instant package search overlay' },
-                  { keys: ['Ctrl', 'R'], desc: 'Sync repository metadata with WinGet' },
-                  { keys: ['Ctrl', '1'], desc: 'Navigate to Store Home' },
-                  { keys: ['Ctrl', '2'], desc: 'Navigate to Discover' },
+                  { keys: ['Ctrl', 'K'], desc: 'Open instant package search' },
+                  { keys: ['Ctrl', 'R'], desc: 'Sync installed apps & updates with WinGet' },
+                  { keys: ['Ctrl', '1'], desc: 'Navigate to Home' },
+                  { keys: ['Ctrl', '2'], desc: 'Navigate to Explore' },
                   { keys: ['Ctrl', '3'], desc: 'Navigate to Categories' },
-                  { keys: ['Ctrl', '4'], desc: 'Navigate to Installed Software' },
-                  { keys: ['Ctrl', '5'], desc: 'Navigate to Update Center' },
-                  { keys: ['Ctrl', '`'], desc: 'Toggle WinGet CLI terminal console' },
-                  { keys: ['Esc'], desc: 'Close open modal dialogs or search' },
+                  { keys: ['Ctrl', '4'], desc: 'Navigate to Installed' },
+                  { keys: ['Ctrl', '5'], desc: 'Navigate to Updates' },
+                  { keys: ['Ctrl', '`'], desc: 'Toggle WinGet CLI console' },
+                  { keys: ['Esc'], desc: 'Dismiss active modal or dialog' },
                 ].map((s, idx) => (
                   <div key={idx} className="py-2.5 flex items-center justify-between text-xs">
-                    <span className="text-neutral-300">{s.desc}</span>
+                    <span className="text-[var(--text-primary)]">{s.desc}</span>
                     <div className="flex items-center gap-1">
                       {s.keys.map(k => (
                         <kbd
                           key={k}
-                          className="px-2 py-0.5 rounded bg-neutral-950 border border-neutral-700 text-neutral-300 font-mono text-[11px]"
+                          className="px-2 py-0.5 rounded-[5px] bg-[var(--surface-subtle)] border border-[var(--border-strong)] text-[var(--text-primary)] font-mono text-[11px]"
                         >
                           {k}
                         </kbd>
@@ -388,85 +648,72 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
             </div>
           )}
 
-          {/* Diagnostics Tab */}
-          {activeTab === 'diagnostics' && (
-            <div className="space-y-6">
-              <h2 className="text-sm font-semibold text-neutral-100 pb-2 border-b border-neutral-800">
-                WinGet Host Diagnostics & Environment
-              </h2>
-
-              <div className="grid grid-cols-2 gap-3 text-xs font-mono">
-                <div className="p-3 bg-neutral-950 rounded-xl border border-neutral-800">
-                  <div className="text-neutral-500">WinGet CLI Status</div>
-                  <div className="text-emerald-400 font-semibold mt-1">
-                    {environment.isInstalled ? 'Installed & Ready' : 'Not Detected'}
-                  </div>
-                </div>
-
-                <div className="p-3 bg-neutral-950 rounded-xl border border-neutral-800">
-                  <div className="text-neutral-500">WinGet Version</div>
-                  <div className="text-neutral-200 mt-1">{environment.version}</div>
-                </div>
-
-                <div className="p-3 bg-neutral-950 rounded-xl border border-neutral-800 col-span-2">
-                  <div className="text-neutral-500">Binary Path</div>
-                  <div className="text-neutral-200 mt-1 truncate">{environment.path}</div>
-                </div>
-
-                <div className="p-3 bg-neutral-950 rounded-xl border border-neutral-800">
-                  <div className="text-neutral-500">Windows OS Build</div>
-                  <div className="text-neutral-200 mt-1">{environment.windowsVersion}</div>
-                </div>
-
-                <div className="p-3 bg-neutral-950 rounded-xl border border-neutral-800">
-                  <div className="text-neutral-500">System Architecture</div>
-                  <div className="text-neutral-200 uppercase mt-1">{environment.architecture}</div>
-                </div>
-              </div>
-
-              <div className="pt-4 border-t border-neutral-800 flex items-center justify-between">
-                <div>
-                  <div className="text-xs font-medium text-neutral-200">Local Cache Maintenance</div>
-                  <div className="text-[11px] text-neutral-400">Purge cached package manifests and query indexes.</div>
-                </div>
-                <button
-                  onClick={onClearCache}
-                  className="px-3 py-1.5 text-xs text-neutral-300 bg-neutral-800 hover:bg-neutral-700 rounded-lg border border-neutral-700 transition-colors"
-                >
-                  Clear Cache
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* About Tab */}
+          {/* About */}
           {activeTab === 'about' && (
-            <div className="space-y-6">
-              <div className="flex items-center gap-4 pb-4 border-b border-neutral-800">
-                <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-sky-600 to-indigo-500 flex items-center justify-center text-xl font-bold text-white shadow-md">
-                  W
+            <div className="space-y-5">
+              <div className="flex items-center gap-4 pb-4 border-b border-[var(--border-subtle)]">
+                <div className="w-12 h-12 rounded-[12px] bg-[var(--accent-primary)] flex items-center justify-center text-xl font-bold text-[var(--accent-primary-contrast)]">
+                  A
                 </div>
                 <div>
-                  <h3 className="text-base font-bold text-neutral-100">AppHub</h3>
-                  <p className="text-xs text-neutral-400 font-mono">
-                    Version 0.1.0-release (Windows x64 / Rust / Tauri 2)
+                  <h2 className="text-base font-bold text-[var(--text-primary)]">AppHub</h2>
+                  <p className="text-xs text-[var(--text-secondary)] font-mono">
+                    Version 0.1.0 · Windows x64 · Rust / Tauri 2
                   </p>
                 </div>
               </div>
 
-              <p className="text-xs text-neutral-300 leading-relaxed">
-                AppHub is an open-source, commercial-grade Windows package store powered by Microsoft WinGet CLI, engineered with Rust, Tauri 2, React, and Tailwind CSS. Built to provide a blazing-fast, minimalist, and transparent software management experience for Windows 10 and 11 power users.
+              <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
+                AppHub is an open-source Windows software store and package manager powered by the Microsoft WinGet CLI, built with Rust, Tauri 2, SQLite, React, and Tailwind CSS.
               </p>
 
-              <div className="space-y-2 text-xs font-mono text-neutral-400 pt-2">
-                <div>Licensed under Apache License 2.0</div>
-                <div>Repository: github.com/apphub-windows/apphub</div>
-                <div>Compatible with Microsoft App Installer v1.23+</div>
+              <div className="space-y-2 text-xs font-mono text-[var(--text-secondary)] pt-1">
+                <div>License: Apache-2.0</div>
+                <div>
+                  Source:{' '}
+                  <a
+                    href="https://github.com/Demonariya/AppHub"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-[var(--accent-primary)] hover:underline"
+                  >
+                    github.com/Demonariya/AppHub
+                  </a>
+                </div>
+                <div>Runtime Dependency: Microsoft Windows Package Manager (winget)</div>
               </div>
             </div>
           )}
         </div>
       </div>
+
+      <ConfirmationDialog
+        isOpen={confirmResetOpen}
+        onCancel={() => setConfirmResetOpen(false)}
+        onConfirm={() => {
+          onResetDefaults();
+          setConfirmResetOpen(false);
+          showToast({ title: 'All Settings Reset to Defaults', tone: 'info' });
+        }}
+        title="Reset All Preferences"
+        description="Restore all settings, favorites, custom collections, and history back to clean defaults?"
+        confirmLabel="Reset Everything"
+        tone="danger"
+      />
+
+      <ConfirmationDialog
+        isOpen={confirmClearCacheOpen}
+        onCancel={() => setConfirmClearCacheOpen(false)}
+        onConfirm={() => {
+          onClearCache();
+          setConfirmClearCacheOpen(false);
+          showToast({ title: 'Package & Icon Cache Cleared', tone: 'success' });
+        }}
+        title="Clear Local Cache"
+        description="Reset cached package metadata and re-resolve icons from WinGet sources?"
+        confirmLabel="Clear Cache"
+        tone="warning"
+      />
     </div>
   );
 };

@@ -1,12 +1,16 @@
 import React from 'react';
-import { Search, Command, RefreshCw, Sun, Moon, Menu } from 'lucide-react';
+import { Search, Command, RefreshCw, Sun, Moon, Menu, Activity } from 'lucide-react';
 import { PageId } from './Sidebar';
+import { Button } from '../ui';
 
 interface TopHeaderProps {
   currentPage: PageId;
   selectedCategory?: string | null;
+  onClearCategory?: () => void;
   onOpenQuickSearch: () => void;
   onRefreshCatalog: () => void;
+  onNavigateToActivity?: () => void;
+  activeOperationsCount?: number;
   isRefreshing?: boolean;
   theme: 'dark' | 'light' | 'system';
   onToggleTheme: () => void;
@@ -14,92 +18,132 @@ interface TopHeaderProps {
 }
 
 const PAGE_TITLES: Record<PageId, string> = {
-  home: 'Store Overview',
-  discover: 'Package Catalog',
-  categories: 'Software Categories',
-  installed: 'Installed Applications',
-  updates: 'Update Center',
-  downloads: 'Installation Queue',
-  library: 'Software Library',
+  home: 'Home',
+  discover: 'Explore',
+  categories: 'Categories',
+  installed: 'Installed',
+  updates: 'Updates',
+  downloads: 'Operations',
+  library: 'Library',
   sources: 'Package Sources',
-  settings: 'System Preferences',
+  settings: 'Settings',
 };
 
 export const TopHeader: React.FC<TopHeaderProps> = ({
   currentPage,
   selectedCategory,
+  onClearCategory,
   onOpenQuickSearch,
   onRefreshCatalog,
+  onNavigateToActivity,
+  activeOperationsCount = 0,
   isRefreshing = false,
   theme,
   onToggleTheme,
   onToggleMobileMenu,
 }) => {
   return (
-    <header className="h-14 border-b border-neutral-800/80 bg-neutral-950/70 backdrop-blur-md px-3 sm:px-6 flex items-center justify-between gap-2 sm:gap-6 shrink-0 z-30">
-      {/* Zone 1: Mobile Menu Button + Breadcrumb Trail */}
-      <div className="flex items-center gap-2 text-xs text-neutral-400 min-w-0">
+    <header className="h-13 border-b border-[var(--border-subtle)] bg-[var(--surface-shell)]/90 backdrop-blur-md px-3 sm:px-6 flex items-center justify-between gap-3 shrink-0 z-30">
+      {/* Left: Mobile Menu + Breadcrumb Trail */}
+      <div className="flex items-center gap-2 text-xs text-[var(--text-secondary)] min-w-0">
         {onToggleMobileMenu && (
           <button
+            type="button"
             onClick={onToggleMobileMenu}
-            className="md:hidden p-1.5 text-neutral-400 hover:text-white hover:bg-neutral-900 rounded-lg shrink-0"
-            title="Toggle Navigation Menu"
+            aria-label="Open navigation menu"
+            className="md:hidden p-1.5 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)] rounded-[6px] shrink-0 cursor-pointer"
           >
             <Menu className="w-4 h-4" />
           </button>
         )}
+
         <div className="flex items-center gap-1.5 truncate">
-          <span className="font-semibold text-neutral-200 hidden sm:inline">AppHub</span>
-          <span className="text-neutral-600 hidden sm:inline">/</span>
-          <span className="text-neutral-300 font-medium truncate">{PAGE_TITLES[currentPage]}</span>
+          <span className="font-semibold text-[var(--text-primary)] hidden sm:inline">AppHub</span>
+          <span className="text-[var(--text-muted)] hidden sm:inline">/</span>
+          {selectedCategory && onClearCategory ? (
+            <button
+              type="button"
+              onClick={onClearCategory}
+              className="text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors cursor-pointer"
+            >
+              {PAGE_TITLES[currentPage]}
+            </button>
+          ) : (
+            <span className="text-[var(--text-primary)] font-medium truncate">
+              {PAGE_TITLES[currentPage]}
+            </span>
+          )}
           {selectedCategory && (
             <>
-              <span className="text-neutral-600">/</span>
-              <span className="text-sky-400 font-medium truncate">{selectedCategory}</span>
+              <span className="text-[var(--text-muted)]">/</span>
+              <span className="text-[var(--accent-primary)] font-medium truncate">
+                {selectedCategory}
+              </span>
             </>
           )}
         </div>
       </div>
 
-      {/* Zone 2: Global Search Bar Affordance (Ctrl + K) */}
-      <div className="flex-1 max-w-lg mx-1 sm:mx-2">
+      {/* Center: Command Search Trigger (Ctrl + K) */}
+      <div className="flex-1 max-w-md mx-1 sm:mx-2">
         <button
+          type="button"
           onClick={onOpenQuickSearch}
-          className="w-full flex items-center justify-between px-2.5 sm:px-3.5 py-1.5 rounded-lg bg-neutral-900 border border-neutral-800 hover:border-neutral-700 text-xs text-neutral-400 hover:text-neutral-200 transition-all shadow-inner group"
+          aria-label="Search packages (Ctrl+K)"
+          className="w-full h-8 flex items-center justify-between px-3 rounded-[8px] bg-[var(--surface-input)] border border-[var(--border-subtle)] hover:border-[var(--border-strong)] text-xs text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors group cursor-pointer"
         >
           <div className="flex items-center gap-2 truncate">
-            <Search className="w-3.5 h-3.5 text-neutral-500 group-hover:text-neutral-400 shrink-0" />
-            <span className="text-neutral-400 group-hover:text-neutral-300 truncate text-left">
-              <span className="hidden sm:inline">Search packages, IDs, publishers, tags...</span>
+            <Search className="w-3.5 h-3.5 text-[var(--text-muted)] group-hover:text-[var(--text-primary)] shrink-0" />
+            <span className="truncate text-left">
+              <span className="hidden sm:inline">Search WinGet apps, IDs, or publishers...</span>
               <span className="sm:hidden">Search packages...</span>
             </span>
           </div>
 
-          <div className="hidden xs:flex items-center gap-1 text-[10px] font-mono bg-neutral-800/80 text-neutral-400 px-1.5 py-0.5 rounded border border-neutral-700 shrink-0">
-            <Command className="w-3 h-3" />
+          <kbd className="hidden sm:inline-flex items-center gap-0.5 text-[10px] font-mono bg-[var(--surface-subtle)] text-[var(--text-muted)] px-1.5 py-0.5 rounded border border-[var(--border-subtle)] shrink-0">
+            <Command className="w-2.5 h-2.5" />
             <span>K</span>
-          </div>
+          </kbd>
         </button>
       </div>
 
-      {/* Zone 3: Actions (Refresh & Theme Toggle) */}
+      {/* Right: Operations shortcut + Refresh + Theme */}
       <div className="flex items-center gap-2 shrink-0">
-        <button
+        {activeOperationsCount > 0 && onNavigateToActivity && (
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={onNavigateToActivity}
+            leftIcon={<Activity className="w-3.5 h-3.5 text-[var(--accent-primary)] animate-pulse" />}
+            title="View active operations"
+          >
+            <span className="font-mono tabular-nums">{activeOperationsCount} active</span>
+          </Button>
+        )}
+
+        <Button
+          size="sm"
+          variant="secondary"
           onClick={onRefreshCatalog}
           disabled={isRefreshing}
-          title="Sync with WinGet repository"
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-neutral-300 bg-neutral-900 border border-neutral-800 hover:border-neutral-700 hover:text-white rounded-lg transition-colors disabled:opacity-50"
+          title="Sync with WinGet repository (Ctrl+R)"
+          leftIcon={
+            <RefreshCw
+              className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-[var(--accent-primary)]' : ''}`}
+            />
+          }
         >
-          <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-sky-400' : ''}`} />
           <span className="hidden sm:inline">{isRefreshing ? 'Syncing...' : 'Sync WinGet'}</span>
-        </button>
+        </Button>
 
         <button
+          type="button"
           onClick={onToggleTheme}
+          aria-label={`Switch theme (Current: ${theme})`}
           title={`Switch theme (Current: ${theme})`}
-          className="p-1.5 text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900 rounded-lg border border-neutral-800 transition-colors"
+          className="w-7 h-7 inline-flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] bg-[var(--surface-panel)] hover:bg-[var(--surface-hover)] rounded-[6px] border border-[var(--border-subtle)] transition-colors cursor-pointer"
         >
-          {theme === 'dark' ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
+          {theme === 'light' ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
         </button>
       </div>
     </header>

@@ -1,12 +1,24 @@
 import React from 'react';
 import { Package, TaskAction } from '../../types';
-import { Check, ArrowUpCircle, Download, ShieldCheck, MoreVertical, ExternalLink } from 'lucide-react';
+import {
+  ArrowUpCircle,
+  Download,
+  ShieldCheck,
+  Star,
+  Copy,
+  ExternalLink,
+  RotateCw,
+  Trash2,
+  Info,
+} from 'lucide-react';
 import { AppIconImage } from './AppIconImage';
+import { Button, ContextMenu, ContextMenuItem, useToast } from '../ui';
 
 interface AppListItemProps {
   pkg: Package;
   onOpenDetails: (pkg: Package) => void;
   onActionClick: (pkg: Package, action: TaskAction) => void;
+  onToggleFavorite?: (pkg: Package) => void;
   isActionActive?: boolean;
 }
 
@@ -14,98 +26,169 @@ export const AppListItem: React.FC<AppListItemProps> = ({
   pkg,
   onOpenDetails,
   onActionClick,
+  onToggleFavorite,
   isActionActive = false,
 }) => {
-  const hasUpdate = pkg.isInstalled && pkg.installedVersion && pkg.installedVersion !== pkg.latestVersion;
+  const { showToast } = useToast();
+  const hasUpdate = Boolean(
+    pkg.isInstalled && pkg.installedVersion && pkg.installedVersion !== pkg.latestVersion
+  );
+
+  const menuItems: ContextMenuItem[] = [
+    {
+      id: 'details',
+      label: 'View Details',
+      icon: <Info className="w-3.5 h-3.5" />,
+      onClick: () => onOpenDetails(pkg),
+    },
+    {
+      id: 'copy-id',
+      label: 'Copy Package ID',
+      icon: <Copy className="w-3.5 h-3.5" />,
+      onClick: () => {
+        navigator.clipboard?.writeText(pkg.id);
+        showToast({ title: 'Copied Package ID', description: pkg.id, tone: 'info' });
+      },
+    },
+    ...(pkg.homepage
+      ? [
+          {
+            id: 'homepage',
+            label: 'Official Website',
+            icon: <ExternalLink className="w-3.5 h-3.5" />,
+            onClick: () => window.open(pkg.homepage, '_blank', 'noopener,noreferrer'),
+          },
+        ]
+      : []),
+    ...(!pkg.isExternal && pkg.isInstalled
+      ? [
+          {
+            id: 'reinstall',
+            label: 'Reinstall',
+            icon: <RotateCw className="w-3.5 h-3.5" />,
+            onClick: () => onActionClick(pkg, 'reinstall'),
+            dividerBefore: true,
+          },
+          {
+            id: 'uninstall',
+            label: 'Uninstall',
+            icon: <Trash2 className="w-3.5 h-3.5" />,
+            onClick: () => onActionClick(pkg, 'uninstall'),
+            tone: 'danger' as const,
+          },
+        ]
+      : []),
+  ];
 
   return (
     <div
       onClick={() => onOpenDetails(pkg)}
-      className="group flex items-center justify-between gap-4 px-4 py-3 bg-neutral-900/40 hover:bg-neutral-900/90 border-b border-neutral-800/60 transition-colors cursor-pointer"
+      className="group flex items-center justify-between gap-4 px-4 py-3 bg-[var(--surface-panel)] hover:bg-[var(--surface-hover)]/70 transition-colors cursor-pointer"
     >
       {/* Left: Icon + Title + Package ID */}
-      <div className="flex items-center gap-3.5 min-w-0 flex-1">
+      <div className="flex items-center gap-3 min-w-0 flex-1">
         <AppIconImage pkg={pkg} size="sm" />
 
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <span className="font-medium text-xs text-neutral-100 group-hover:text-sky-300 transition-colors truncate">
+            <span className="font-medium text-xs text-[var(--text-primary)] group-hover:text-[var(--accent-primary)] transition-colors truncate">
               {pkg.name}
             </span>
-            {pkg.verified && (
+            {pkg.verified && !pkg.isExternal && (
               <span title="Verified Publisher">
-                <ShieldCheck className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                <ShieldCheck className="w-3.5 h-3.5 text-[var(--accent-primary)] shrink-0" />
               </span>
             )}
+            {pkg.isExternal && (
+              <span className="text-[10px] font-mono text-[var(--text-muted)]">· External</span>
+            )}
           </div>
-          <div className="flex items-center gap-2 text-[11px] text-neutral-400 font-mono">
+          <div className="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)] font-mono truncate">
             <span className="truncate">{pkg.id}</span>
-            <span className="text-neutral-600">·</span>
-            <span className="text-neutral-300">{pkg.formattedDownloadSize || pkg.formattedSize}</span>
-            <span className="text-neutral-500 hidden sm:inline">(needs {pkg.formattedInstalledSize || '~150 MB'} disk)</span>
+            {pkg.publisher && (
+              <>
+                <span>·</span>
+                <span className="text-[var(--text-secondary)] truncate">{pkg.publisher}</span>
+              </>
+            )}
           </div>
         </div>
       </div>
 
-      {/* Middle: Category & Versions & Size (Tabular figures) */}
-      <div className="hidden md:flex items-center gap-6 text-xs text-neutral-400 font-mono tabular-nums shrink-0">
-        <div className="w-24 truncate">{pkg.category}</div>
-        
-        <div className="w-24 text-right">
+      {/* Middle: Source & Versions */}
+      <div className="hidden md:flex items-center gap-6 text-xs text-[var(--text-secondary)] font-mono tabular-nums shrink-0">
+        <div className="w-24 truncate">{pkg.isExternal ? 'Local' : pkg.source}</div>
+
+        <div className="w-28 text-right truncate">
           {pkg.isInstalled ? (
             <span>v{pkg.installedVersion}</span>
           ) : (
-            <span className="text-neutral-600">—</span>
+            <span className="text-[var(--text-muted)]">—</span>
           )}
         </div>
 
-        <div className="w-24 text-right text-neutral-300">
+        <div className="w-28 text-right text-[var(--text-primary)] truncate">
           <span>v{pkg.latestVersion}</span>
-        </div>
-
-        <div className="w-32 text-right text-neutral-300 font-mono">
-          <div>{pkg.formattedDownloadSize || pkg.formattedSize}</div>
-          <div className="text-[10px] text-neutral-500">req. {pkg.formattedInstalledSize || '~150 MB'}</div>
         </div>
       </div>
 
-      {/* Right: Actions */}
-      <div className="flex items-center gap-2 shrink-0" onClick={e => e.stopPropagation()}>
-        {hasUpdate ? (
+      {/* Right: Favorite + Primary Action + Context Menu */}
+      <div className="flex items-center gap-1.5 shrink-0" onClick={e => e.stopPropagation()}>
+        {onToggleFavorite && (
           <button
-            onClick={() => onActionClick(pkg, 'update')}
-            disabled={isActionActive}
-            className="flex items-center gap-1.5 px-3 py-1 text-xs font-medium text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 rounded-md transition-colors"
+            type="button"
+            onClick={() => onToggleFavorite(pkg)}
+            aria-label={pkg.isFavorite ? `Remove ${pkg.name} from Favorites` : `Add ${pkg.name} to Favorites`}
+            title={pkg.isFavorite ? 'Remove from Favorites' : 'Add to Favorites'}
+            className={`w-7 h-7 inline-flex items-center justify-center rounded-[6px] transition-colors cursor-pointer ${
+              pkg.isFavorite
+                ? 'text-[var(--status-warning-fg)]'
+                : 'text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-hover)]'
+            }`}
           >
-            <ArrowUpCircle className="w-3.5 h-3.5 text-amber-400" />
-            <span>Update</span>
-          </button>
-        ) : pkg.isInstalled ? (
-          <button
-            onClick={() => onActionClick(pkg, 'uninstall')}
-            disabled={isActionActive}
-            className="flex items-center gap-1.5 px-3 py-1 text-xs font-medium text-neutral-400 hover:text-red-300 hover:bg-red-500/10 border border-neutral-700/80 hover:border-red-500/30 rounded-md transition-colors"
-          >
-            <span>Uninstall</span>
-          </button>
-        ) : (
-          <button
-            onClick={() => onActionClick(pkg, 'install')}
-            disabled={isActionActive}
-            className="flex items-center gap-1.5 px-3 py-1 text-xs font-medium text-neutral-100 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-md transition-colors"
-          >
-            <Download className="w-3.5 h-3.5 text-sky-400" />
-            <span>Get</span>
+            <Star className={`w-3.5 h-3.5 ${pkg.isFavorite ? 'fill-current' : ''}`} />
           </button>
         )}
 
-        <button
-          onClick={() => onOpenDetails(pkg)}
-          title="Details"
-          className="p-1 text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800 rounded transition-colors"
-        >
-          <ExternalLink className="w-3.5 h-3.5" />
-        </button>
+        {pkg.isExternal ? (
+          <span
+            title="Installed outside WinGet repository; manage via Windows Installed Apps"
+            className="inline-flex items-center h-7 px-2.5 text-[11px] font-mono text-[var(--text-muted)] bg-[var(--surface-subtle)] border border-[var(--border-subtle)] rounded-[6px] whitespace-nowrap"
+          >
+            Non-WinGet
+          </span>
+        ) : hasUpdate ? (
+          <Button
+            size="sm"
+            variant="warning"
+            onClick={() => onActionClick(pkg, 'update')}
+            disabled={isActionActive}
+            leftIcon={<ArrowUpCircle className="w-3.5 h-3.5" />}
+          >
+            Update
+          </Button>
+        ) : pkg.isInstalled ? (
+          <Button
+            size="sm"
+            variant="danger"
+            onClick={() => onActionClick(pkg, 'uninstall')}
+            disabled={isActionActive}
+          >
+            Uninstall
+          </Button>
+        ) : (
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => onActionClick(pkg, 'install')}
+            disabled={isActionActive}
+            leftIcon={<Download className="w-3.5 h-3.5 text-[var(--accent-primary)]" />}
+          >
+            Get
+          </Button>
+        )}
+
+        <ContextMenu items={menuItems} ariaLabel={`More options for ${pkg.name}`} />
       </div>
     </div>
   );

@@ -1,34 +1,35 @@
-import React, { useState, useMemo } from 'react';
-import { Package, TaskAction } from '../types';
+import React, { useState, useEffect, useRef } from 'react';
+import { Package, TaskAction, InstallationTask } from '../types';
 import {
   ArrowUpCircle,
   RefreshCw,
   Pin,
   CheckCircle2,
-  AlertCircle,
-  ExternalLink,
   ShieldCheck,
-  Check,
-  RotateCw,
-  HardDrive,
-  Download,
+  Loader2,
 } from 'lucide-react';
 import { AppIconImage } from '../components/common/AppIconImage';
 import { formatBytes } from '../services/catalog';
+import { PageHeader, Button, StatusBadge, ErrorState, EmptyState } from '../components/ui';
 
 interface UpdatesPageProps {
   packages: Package[];
+  activeTasks?: InstallationTask[];
+  queue?: InstallationTask[];
   onOpenDetails: (pkg: Package) => void;
   onActionClick: (pkg: Package, action: TaskAction, options?: any) => void;
   onUpdateAll: (selectedPackages: Package[]) => void;
-  onPinPackage: (pkg: Package, pin: boolean) => void;
+  onPinPackage: (pkg: Package, pin: boolean) => Promise<void> | void;
   onExcludePackage: (pkg: Package, exclude: boolean) => void;
   onScanUpdates: () => void;
   isScanning?: boolean;
+  pinError?: string | null;
 }
 
 export const UpdatesPage: React.FC<UpdatesPageProps> = ({
   packages,
+  activeTasks = [],
+  queue = [],
   onOpenDetails,
   onActionClick,
   onUpdateAll,
@@ -36,48 +37,50 @@ export const UpdatesPage: React.FC<UpdatesPageProps> = ({
   onExcludePackage,
   onScanUpdates,
   isScanning = false,
+  pinError = null,
 }) => {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [pinningId, setPinningId] = useState<string | null>(null);
+  const prevIdsRef = useRef<Set<string>>(new Set());
 
-  // Apps with updates available
   const updateList = packages.filter(
-    p => p.isInstalled && p.installedVersion && p.installedVersion !== p.latestVersion
+    p =>
+      !p.isExternal &&
+      p.isInstalled &&
+      p.installedVersion &&
+      p.latestVersion &&
+      p.installedVersion !== p.latestVersion
   );
 
   const pinnedList = packages.filter(p => p.isPinned);
 
-  // Initialize selected packages with non-excluded apps
-  React.useEffect(() => {
-    const nonExcluded = new Set(
-      updateList.filter(p => !p.isExcludedFromUpdates && !p.isPinned).map(p => p.id)
-    );
-    setSelectedIds(nonExcluded);
+  useEffect(() => {
+    const currentIds = new Set(updateList.map(p => p.id));
+    setSelectedIds(prev => {
+      const next = new Set<string>();
+      for (const id of prev) {
+        if (currentIds.has(id)) {
+          next.add(id);
+        }
+      }
+      for (const pkg of updateList) {
+        if (!prevIdsRef.current.has(pkg.id) && !pkg.isExcludedFromUpdates && !pkg.isPinned) {
+          next.add(pkg.id);
+        }
+      }
+      return next;
+    });
+    prevIdsRef.current = currentIds;
   }, [packages]);
 
-  // Compute total download and disk storage metrics for selected packages
-  const { totalDownloadBytes, totalInstalledBytes } = useMemo(() => {
-    const selected = updateList.filter(p => selectedIds.has(p.id));
-    const dlBytes = selected.reduce(
-      (sum, p) => sum + (p.downloadSizeBytes || p.sizeBytes || 45 * 1024 * 1024),
-      0
-    );
-    const instBytes = selected.reduce(
-      (sum, p) => sum + (p.installedSizeBytes || (p.downloadSizeBytes ? Math.round(p.downloadSizeBytes * 3.4) : 150 * 1024 * 1024)),
-      0
-    );
-    return {
-      totalDownloadBytes: dlBytes,
-      totalInstalledBytes: instBytes,
-    };
-  }, [updateList, selectedIds]);
+  const knownDownloadBytes = updateList
+    .filter(p => selectedIds.has(p.id) && (p.downloadSizeBytes || p.sizeBytes))
+    .reduce((sum, p) => sum + (p.downloadSizeBytes || p.sizeBytes || 0), 0);
 
   const toggleSelect = (id: string) => {
     const next = new Set(selectedIds);
-    if (next.has(id)) {
-      next.delete(id);
-    } else {
-      next.add(id);
-    }
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
     setSelectedIds(next);
   };
 
@@ -91,148 +94,213 @@ export const UpdatesPage: React.FC<UpdatesPageProps> = ({
 
   const handleUpdateAllSelected = () => {
     const toUpdate = updateList.filter(p => selectedIds.has(p.id));
-    onUpdateAll(toUpdate);
+    if (toUpdate.length > 0) {
+      onUpdateAll(toUpdate);
+    }
   };
 
+  const handleTogglePin = async (pkg: Package, pin: boolean) => {
+    setPinningId(pkg.id);
+    try {
+      await onPinPackage(pkg, pin);
+    } finally {
+      setPinningId(null);
+    }
+  };
+
+  const getPackageLiveTask = (pkgId: string) =>
+    activeTasks.find(t => t.packageId === pkgId) || queue.find(t => t.packageId === pkgId);
+
   return (
-    <div className="p-4 sm:p-8 max-w-7xl mx-auto space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-xl font-bold text-neutral-100">Update Center</h1>
-          <p className="text-xs text-neutral-400 mt-1">
-            Detect and install newer versions published to Microsoft WinGet.
-          </p>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            onClick={onScanUpdates}
-            disabled={isScanning}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-neutral-300 bg-neutral-900 border border-neutral-800 hover:border-neutral-700 hover:text-white rounded-lg transition-colors disabled:opacity-50"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${isScanning ? 'animate-spin text-sky-400' : ''}`} />
-            <span>{isScanning ? 'Checking WinGet...' : 'Scan for Updates'}</span>
-          </button>
-
-          {updateList.length > 0 && (
-            <button
-              onClick={handleUpdateAllSelected}
-              disabled={selectedIds.size === 0}
-              className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold text-neutral-950 bg-amber-400 hover:bg-amber-300 rounded-lg transition-colors disabled:opacity-50 shadow-sm"
+    <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-6 animate-page-in">
+      <PageHeader
+        title="Update Center"
+        subtitle="Review available WinGet upgrades, pin package versions, and run batch updates."
+        actions={
+          <>
+            <Button
+              size="md"
+              variant="secondary"
+              onClick={onScanUpdates}
+              disabled={isScanning}
+              leftIcon={
+                <RefreshCw
+                  className={`w-3.5 h-3.5 ${isScanning ? 'animate-spin text-[var(--accent-primary)]' : ''}`}
+                />
+              }
             >
-              <ArrowUpCircle className="w-3.5 h-3.5" />
-              <span>Update Selected ({selectedIds.size})</span>
-            </button>
-          )}
-        </div>
-      </div>
+              {isScanning ? 'Checking WinGet...' : 'Scan for Updates'}
+            </Button>
 
-      {/* Main Updates Section */}
+            {updateList.length > 0 && (
+              <Button
+                size="md"
+                variant="warning"
+                onClick={handleUpdateAllSelected}
+                disabled={selectedIds.size === 0}
+                leftIcon={<ArrowUpCircle className="w-3.5 h-3.5" />}
+              >
+                Update Selected ({selectedIds.size})
+              </Button>
+            )}
+          </>
+        }
+      />
+
+      {pinError && <ErrorState title="Version Pin Failed" message={pinError} />}
+
       {updateList.length > 0 ? (
         <div className="space-y-4">
-          {/* Storage & Action strip */}
-          <div className="p-3 bg-neutral-900/60 border border-neutral-800 rounded-xl flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs text-neutral-400">
-            <label className="flex items-center gap-2 cursor-pointer select-none">
+          {/* Selection Bar */}
+          <div className="px-4 py-3 bg-[var(--surface-panel)] border border-[var(--border-subtle)] rounded-[10px] flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+            <label className="flex items-center gap-2.5 cursor-pointer select-none">
               <input
                 type="checkbox"
                 checked={selectedIds.size === updateList.length && updateList.length > 0}
                 onChange={handleSelectAll}
-                className="w-4 h-4 rounded bg-neutral-800 border-neutral-700 text-sky-500 focus:ring-0 cursor-pointer"
+                className="w-4 h-4 rounded accent-[var(--accent-primary)] cursor-pointer"
               />
-              <span className="text-neutral-200 font-medium">Select All Updates</span>
+              <span className="text-[var(--text-primary)] font-medium">
+                Select All Available Updates
+              </span>
             </label>
 
-            <div className="flex flex-wrap items-center gap-3 text-xs font-mono tabular-nums">
-              <span className="text-neutral-300 flex items-center gap-1">
-                <Download className="w-3.5 h-3.5 text-sky-400" />
-                <span>Total download: <strong className="text-white font-semibold">{formatBytes(totalDownloadBytes)}</strong></span>
-              </span>
-              <span className="text-neutral-600">·</span>
-              <span className="text-neutral-300 flex items-center gap-1">
-                <HardDrive className="w-3.5 h-3.5 text-amber-400" />
-                <span>Required disk space: <strong className="text-white font-semibold">{formatBytes(totalInstalledBytes)}</strong></span>
-              </span>
-              <span className="text-neutral-600">·</span>
-              <span className="text-neutral-400">
+            <div className="flex flex-wrap items-center gap-2 text-xs font-mono tabular-nums text-[var(--text-secondary)]">
+              {knownDownloadBytes > 0 && (
+                <>
+                  <span>
+                    Known payload:{' '}
+                    <strong className="text-[var(--text-primary)]">
+                      {formatBytes(knownDownloadBytes)}
+                    </strong>
+                  </span>
+                  <span className="text-[var(--text-muted)]">·</span>
+                </>
+              )}
+              <span>
                 {selectedIds.size} of {updateList.length} selected
               </span>
             </div>
           </div>
 
-          {/* List of pending updates */}
-          <div className="rounded-xl border border-neutral-800 overflow-hidden divide-y divide-neutral-800/80 bg-neutral-950/40">
+          {/* Updates Table/Rows */}
+          <div className="rounded-[12px] border border-[var(--border-subtle)] overflow-hidden divide-y divide-[var(--border-subtle)] bg-[var(--surface-panel)]">
             {updateList.map(pkg => {
               const isSelected = selectedIds.has(pkg.id);
+              const isPinning = pinningId === pkg.id;
+              const liveTask = getPackageLiveTask(pkg.id);
 
               return (
                 <div
                   key={pkg.id}
-                  className="p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 hover:bg-neutral-900/60 transition-colors"
+                  onClick={() => onOpenDetails(pkg)}
+                  className="p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 hover:bg-[var(--surface-hover)]/65 transition-colors cursor-pointer"
                 >
-                  {/* Left: Checkbox + Icon + Info */}
-                  <div className="flex items-center gap-3 min-w-0">
+                  <div className="flex items-center gap-3 min-w-0" onClick={e => e.stopPropagation()}>
                     <input
                       type="checkbox"
                       checked={isSelected}
                       onChange={() => toggleSelect(pkg.id)}
-                      className="w-4 h-4 rounded bg-neutral-800 border-neutral-700 text-sky-500 focus:ring-0 cursor-pointer"
+                      aria-label={`Select ${pkg.name} for update`}
+                      className="w-4 h-4 rounded accent-[var(--accent-primary)] cursor-pointer"
                     />
 
-                    <AppIconImage pkg={pkg} size="md" />
+                    <div onClick={() => onOpenDetails(pkg)} className="cursor-pointer">
+                      <AppIconImage pkg={pkg} size="md" />
+                    </div>
 
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium text-xs text-neutral-100">{pkg.name}</span>
-                        {pkg.verified && <ShieldCheck className="w-3.5 h-3.5 text-sky-400" />}
+                    <div className="min-w-0 cursor-pointer" onClick={() => onOpenDetails(pkg)}>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-semibold text-xs text-[var(--text-primary)]">
+                          {pkg.name}
+                        </span>
+                        {pkg.verified && (
+                          <ShieldCheck className="w-3.5 h-3.5 text-[var(--accent-primary)]" />
+                        )}
                         {pkg.isPinned && (
-                          <span className="text-[10px] font-mono text-purple-400 flex items-center gap-0.5">
-                            <Pin className="w-2.5 h-2.5" /> Pinned
+                          <span className="text-[11px] font-mono text-[var(--accent-primary)] inline-flex items-center gap-0.5">
+                            <Pin className="w-3 h-3" /> Pinned
                           </span>
                         )}
+                        {liveTask && (
+                          <StatusBadge
+                            status={liveTask.status === 'queued' ? 'queued' : 'running'}
+                            compact
+                          />
+                        )}
                       </div>
-                      <div className="text-[11px] text-neutral-400 font-mono flex flex-wrap items-center gap-2 mt-0.5">
-                        <span className="text-neutral-500">{pkg.id}</span>
-                        <span className="text-neutral-600">·</span>
-                        <span className="text-neutral-300">Download: {pkg.formattedDownloadSize || pkg.formattedSize}</span>
-                        <span className="text-neutral-600">·</span>
-                        <span className="text-neutral-400">Needs {pkg.formattedInstalledSize || '~150 MB'} disk space</span>
+                      <div className="text-[11px] text-[var(--text-muted)] font-mono flex flex-wrap items-center gap-1.5 mt-0.5">
+                        <span>{pkg.id}</span>
+                        {(pkg.formattedDownloadSize || pkg.formattedSize) && (
+                          <>
+                            <span>·</span>
+                            <span className="text-[var(--text-secondary)]">
+                              {pkg.formattedDownloadSize || pkg.formattedSize}
+                            </span>
+                          </>
+                        )}
+                        <span>·</span>
+                        <span>{pkg.source}</span>
                       </div>
                     </div>
                   </div>
 
-                  {/* Middle: Version comparison (Tabular numerals) */}
-                  <div className="flex items-center gap-4 text-xs font-mono tabular-nums shrink-0">
-                    <div className="text-neutral-400">
-                      Current: <span className="text-neutral-300">v{pkg.installedVersion}</span>
-                    </div>
-                    <span className="text-neutral-600">→</span>
-                    <div className="text-amber-400 font-semibold">
-                      New: <span>v{pkg.latestVersion}</span>
-                    </div>
+                  {/* Version Comparison */}
+                  <div className="flex items-center gap-3 text-xs font-mono tabular-nums shrink-0">
+                    <span className="text-[var(--text-secondary)]">v{pkg.installedVersion}</span>
+                    <span className="text-[var(--text-muted)]">→</span>
+                    <span className="text-[var(--status-warning-fg)] font-semibold">
+                      v{pkg.latestVersion}
+                    </span>
                   </div>
 
-                  {/* Right Actions: Single update + Pin button */}
-                  <div className="flex items-center gap-2 shrink-0">
+                  {/* Row Actions */}
+                  <div className="flex items-center gap-2 shrink-0" onClick={e => e.stopPropagation()}>
+                    <Button
+                      size="sm"
+                      variant={pkg.isExcludedFromUpdates ? 'secondary' : 'ghost'}
+                      onClick={() => onExcludePackage(pkg, !pkg.isExcludedFromUpdates)}
+                      title={
+                        pkg.isExcludedFromUpdates
+                          ? 'Include in bulk updates'
+                          : 'Skip in bulk selection'
+                      }
+                    >
+                      {pkg.isExcludedFromUpdates ? 'Skipped' : 'Skip'}
+                    </Button>
+
                     <button
-                      onClick={() => onPinPackage(pkg, !pkg.isPinned)}
-                      title={pkg.isPinned ? 'Unpin package version' : 'Pin to prevent automated updates (winget pin)'}
-                      className={`p-1.5 rounded-lg border transition-colors ${
+                      type="button"
+                      onClick={() => handleTogglePin(pkg, !pkg.isPinned)}
+                      disabled={isPinning}
+                      aria-label={pkg.isPinned ? `Unpin ${pkg.name}` : `Pin ${pkg.name}`}
+                      title={
                         pkg.isPinned
-                          ? 'bg-purple-500/20 text-purple-300 border-purple-500/40'
-                          : 'text-neutral-400 hover:text-neutral-200 border-neutral-800 hover:bg-neutral-800'
+                          ? 'Unpin package version (winget pin remove)'
+                          : 'Pin package version (winget pin add)'
+                      }
+                      className={`w-7 h-7 inline-flex items-center justify-center rounded-[6px] border transition-colors cursor-pointer disabled:opacity-45 ${
+                        pkg.isPinned
+                          ? 'bg-[var(--accent-soft)] text-[var(--accent-primary)] border-[var(--accent-border)]'
+                          : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] border-[var(--border-subtle)] hover:bg-[var(--surface-hover)]'
                       }`}
                     >
-                      <Pin className="w-3.5 h-3.5" />
+                      {isPinning ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Pin className="w-3.5 h-3.5" />
+                      )}
                     </button>
 
-                    <button
+                    <Button
+                      size="sm"
+                      variant="warning"
+                      disabled={Boolean(liveTask)}
+                      leftIcon={<ArrowUpCircle className="w-3.5 h-3.5" />}
                       onClick={() => onActionClick(pkg, 'update')}
-                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-neutral-950 bg-amber-400 hover:bg-amber-300 rounded-lg transition-colors shadow-sm"
                     >
-                      <ArrowUpCircle className="w-3.5 h-3.5" />
-                      <span>Update</span>
-                    </button>
+                      {liveTask ? 'Queued' : 'Update'}
+                    </Button>
                   </div>
                 </div>
               );
@@ -240,49 +308,54 @@ export const UpdatesPage: React.FC<UpdatesPageProps> = ({
           </div>
         </div>
       ) : (
-        /* Empty State: All Up to Date */
-        <div className="py-20 text-center space-y-3 bg-neutral-900/30 rounded-2xl border border-neutral-800/60 p-8">
-          <CheckCircle2 className="w-12 h-12 text-emerald-400 mx-auto" />
-          <h2 className="text-base font-semibold text-neutral-100">All Software Is Up to Date</h2>
-          <p className="text-xs text-neutral-400 max-w-md mx-auto">
-            Your installed applications match the latest package versions published to the WinGet repository.
-          </p>
-          <button
-            onClick={onScanUpdates}
-            className="px-4 py-2 text-xs font-medium text-neutral-200 bg-neutral-800 hover:bg-neutral-700 rounded-lg transition-colors"
-          >
-            Check Again
-          </button>
-        </div>
+        <EmptyState
+          icon={<CheckCircle2 className="w-6 h-6 text-[var(--status-success-fg)]" />}
+          title="All Software Is Up to Date"
+          description="Installed WinGet packages match the latest versions reported by your active WinGet sources."
+          action={
+            <Button
+              size="md"
+              variant="secondary"
+              onClick={onScanUpdates}
+              loading={isScanning}
+            >
+              Check Again
+            </Button>
+          }
+        />
       )}
 
-      {/* Pinned Packages Reference */}
+      {/* Pinned Packages */}
       {pinnedList.length > 0 && (
-        <div className="pt-6 border-t border-neutral-800 space-y-3">
+        <div className="pt-4 border-t border-[var(--border-subtle)] space-y-3">
           <div className="flex items-center gap-2">
-            <Pin className="w-4 h-4 text-purple-400" />
-            <h3 className="text-sm font-semibold text-neutral-200">
+            <Pin className="w-4 h-4 text-[var(--accent-primary)]" />
+            <h2 className="text-sm font-semibold text-[var(--text-primary)]">
               Pinned Packages (Excluded from Automated Upgrades)
-            </h3>
+            </h2>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {pinnedList.map(pkg => (
               <div
                 key={pkg.id}
-                className="p-3 rounded-lg bg-neutral-900 border border-neutral-800 flex items-center justify-between"
+                className="p-3.5 rounded-[10px] bg-[var(--surface-panel)] border border-[var(--border-subtle)] flex items-center justify-between gap-3"
               >
-                <div>
-                  <div className="text-xs font-medium text-neutral-200">{pkg.name}</div>
-                  <div className="text-[11px] font-mono text-neutral-400">
-                    Pinned version: v{pkg.installedVersion || pkg.version}
+                <div className="min-w-0">
+                  <div className="text-xs font-semibold text-[var(--text-primary)] truncate">
+                    {pkg.name}
+                  </div>
+                  <div className="text-[11px] font-mono text-[var(--text-secondary)]">
+                    Pinned at v{pkg.pinnedVersion || pkg.installedVersion || pkg.version}
                   </div>
                 </div>
-                <button
-                  onClick={() => onPinPackage(pkg, false)}
-                  className="text-xs text-purple-400 hover:text-purple-300 underline"
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => handleTogglePin(pkg, false)}
+                  disabled={pinningId === pkg.id}
                 >
                   Unpin
-                </button>
+                </Button>
               </div>
             ))}
           </div>

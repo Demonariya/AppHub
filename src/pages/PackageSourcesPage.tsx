@@ -7,18 +7,24 @@ import {
   Trash2,
   RotateCcw,
   ShieldCheck,
-  ShieldAlert,
-  CheckCircle2,
-  ExternalLink,
-  X,
-  AlertTriangle,
+  Copy,
 } from 'lucide-react';
-import { DEFAULT_SOURCES, storage } from '../services/storage';
+import { storage } from '../services/storage';
+import { wingetEngine } from '../services/wingetEngine';
+import {
+  PageHeader,
+  Button,
+  StatusBadge,
+  ErrorState,
+  Dialog,
+  ConfirmationDialog,
+  useToast,
+} from '../components/ui';
 
 interface PackageSourcesPageProps {
   sources: PackageSource[];
   onUpdateSources: (sources: PackageSource[]) => void;
-  onRefreshAllSources: () => void;
+  onRefreshAllSources?: () => Promise<void> | void;
   isRefreshing?: boolean;
 }
 
@@ -28,241 +34,334 @@ export const PackageSourcesPage: React.FC<PackageSourcesPageProps> = ({
   onRefreshAllSources,
   isRefreshing = false,
 }) => {
+  const { showToast } = useToast();
   const [showAddModal, setShowAddModal] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
+  const [sourceToRemove, setSourceToRemove] = useState<PackageSource | null>(null);
   const [sourceName, setSourceName] = useState('');
   const [sourceUrl, setSourceUrl] = useState('');
   const [validationError, setValidationError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [busyAction, setBusyAction] = useState<string | null>(null);
 
-  const handleToggleSource = (id: string) => {
-    const next = sources.map(s => (s.id === id ? { ...s, enabled: !s.enabled } : s));
-    storage.saveSources(next);
-    onUpdateSources(next);
+  const reloadSourcesFromWinGet = async () => {
+    const live = await wingetEngine.getSources();
+    const mapped: PackageSource[] = live.map(s => ({
+      id: s.name.toLowerCase(),
+      name: s.name,
+      arg: s.argument,
+      type: s.name === 'msstore' ? 'msstore' : s.name === 'winget' ? 'winget' : 'custom',
+      isOfficial: s.isOfficial,
+      trustLevel: s.isOfficial ? 'verified' : 'community',
+    }));
+    storage.saveSources(mapped);
+    onUpdateSources(mapped);
   };
 
-  const handleRemoveSource = (id: string) => {
-    const next = sources.filter(s => s.id !== id);
-    storage.saveSources(next);
-    onUpdateSources(next);
+  const handleUpdateSources = async () => {
+    setActionError(null);
+    setBusyAction('update');
+    try {
+      await wingetEngine.updateSources();
+      await reloadSourcesFromWinGet();
+      if (onRefreshAllSources) {
+        await onRefreshAllSources();
+      }
+      showToast({ title: 'WinGet Sources Updated', tone: 'success' });
+    } catch (err: any) {
+      setActionError(err?.message || String(err));
+    } finally {
+      setBusyAction(null);
+    }
   };
 
-  const handleResetToDefault = () => {
-    storage.saveSources(DEFAULT_SOURCES);
-    onUpdateSources(DEFAULT_SOURCES);
+  const handleRemoveSource = async () => {
+    if (!sourceToRemove) return;
+    const target = sourceToRemove;
+    setSourceToRemove(null);
+    setActionError(null);
+    setBusyAction(`remove:${target.id}`);
+    try {
+      await wingetEngine.removeSource(target.name);
+      await reloadSourcesFromWinGet();
+      showToast({ title: 'Source Removed', description: target.name, tone: 'info' });
+    } catch (err: any) {
+      setActionError(err?.message || String(err));
+    } finally {
+      setBusyAction(null);
+    }
   };
 
-  const handleAddSource = () => {
+  const handleResetToDefault = async () => {
+    setActionError(null);
+    setBusyAction('reset');
+    setConfirmReset(false);
+    try {
+      await wingetEngine.resetSources();
+      await reloadSourcesFromWinGet();
+      showToast({ title: 'WinGet Sources Reset', tone: 'success' });
+    } catch (err: any) {
+      setActionError(err?.message || String(err));
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const handleAddSource = async () => {
     setValidationError(null);
-    if (!sourceName.trim() || !sourceUrl.trim()) {
-      setValidationError('Please provide both a source name and repository URL.');
+    setActionError(null);
+
+    const trimmedName = sourceName.trim();
+    const trimmedUrl = sourceUrl.trim();
+
+    if (!trimmedName || !trimmedUrl) {
+      setValidationError('Please provide both a source name and HTTPS repository URL.');
       return;
     }
 
-    if (!sourceUrl.startsWith('https://')) {
-      setValidationError('Source URL must use secure HTTPS protocol.');
+    if (!/^[A-Za-z0-9._-]+$/.test(trimmedName)) {
+      setValidationError(
+        'Source name may only contain letters, numbers, dots, underscores, or hyphens.'
+      );
       return;
     }
 
-    if (sources.some(s => s.name.toLowerCase() === sourceName.trim().toLowerCase())) {
-      setValidationError(`A source with name "${sourceName.trim()}" already exists.`);
+    if (!trimmedUrl.startsWith('https://')) {
+      setValidationError('Source URL must use HTTPS.');
       return;
     }
 
-    const created: PackageSource = {
-      id: `src_${Date.now()}`,
-      name: sourceName.trim(),
-      arg: sourceUrl.trim(),
-      type: 'custom',
-      enabled: true,
-      isOfficial: false,
-      lastUpdated: new Date().toISOString().replace('T', ' ').slice(0, 19),
-      packageCount: 0,
-      trustLevel: 'community',
-    };
+    if (sources.some(s => s.name.toLowerCase() === trimmedName.toLowerCase())) {
+      setValidationError(`A source named "${trimmedName}" already exists.`);
+      return;
+    }
 
-    const next = [...sources, created];
-    storage.saveSources(next);
-    onUpdateSources(next);
-    setSourceName('');
-    setSourceUrl('');
-    setShowAddModal(false);
+    setBusyAction('add');
+    try {
+      await wingetEngine.addSource(trimmedName, trimmedUrl);
+      await reloadSourcesFromWinGet();
+      setSourceName('');
+      setSourceUrl('');
+      setShowAddModal(false);
+      showToast({ title: 'Package Source Added', description: trimmedName, tone: 'success' });
+    } catch (err: any) {
+      setValidationError(err?.message || String(err));
+    } finally {
+      setBusyAction(null);
+    }
   };
+
+  const busy = busyAction !== null || isRefreshing;
 
   return (
-    <div className="p-4 sm:p-8 max-w-7xl mx-auto space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-xl font-bold text-neutral-100">Package Sources</h1>
-          <p className="text-xs text-neutral-400 mt-1">
-            Configure upstream package repositories queried by Microsoft WinGet.
-          </p>
-        </div>
+    <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-6 animate-page-in">
+      <PageHeader
+        title="Package Sources"
+        subtitle="Configure upstream package repositories queried by Microsoft WinGet."
+        actions={
+          <>
+            <Button
+              size="md"
+              variant="secondary"
+              onClick={handleUpdateSources}
+              disabled={busy}
+              leftIcon={
+                <RefreshCw
+                  className={`w-3.5 h-3.5 ${
+                    busyAction === 'update' || isRefreshing
+                      ? 'animate-spin text-[var(--accent-primary)]'
+                      : ''
+                  }`}
+                />
+              }
+            >
+              {busyAction === 'update' ? 'Updating...' : 'Update Sources'}
+            </Button>
 
-        <div className="flex items-center gap-2">
-          <button
-            onClick={onRefreshAllSources}
-            disabled={isRefreshing}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-neutral-300 bg-neutral-900 border border-neutral-800 hover:border-neutral-700 hover:text-white rounded-lg transition-colors disabled:opacity-50"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-sky-400' : ''}`} />
-            <span>{isRefreshing ? 'Updating Sources...' : 'winget source update'}</span>
-          </button>
+            <Button
+              size="md"
+              variant="secondary"
+              onClick={() => setConfirmReset(true)}
+              disabled={busy}
+              leftIcon={<RotateCcw className="w-3.5 h-3.5" />}
+            >
+              Reset Defaults
+            </Button>
 
-          <button
-            onClick={handleResetToDefault}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-neutral-400 hover:text-neutral-200 bg-neutral-900 border border-neutral-800 rounded-lg transition-colors"
-          >
-            <RotateCcw className="w-3.5 h-3.5" />
-            <span>Reset Sources</span>
-          </button>
+            <Button
+              size="md"
+              variant="primary"
+              onClick={() => {
+                setValidationError(null);
+                setShowAddModal(true);
+              }}
+              disabled={busy}
+              leftIcon={<Plus className="w-4 h-4" />}
+            >
+              Add Source
+            </Button>
+          </>
+        }
+      />
 
-          <button
-            onClick={() => setShowAddModal(true)}
-            className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold text-neutral-950 bg-sky-400 hover:bg-sky-300 rounded-lg transition-colors shadow-sm"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Add Source</span>
-          </button>
-        </div>
-      </div>
+      {actionError && (
+        <ErrorState
+          title="Source Operation Failed"
+          message={actionError}
+          onDismiss={() => setActionError(null)}
+        />
+      )}
 
-      {/* Security notice regarding third party sources */}
-      <div className="p-4 rounded-xl bg-neutral-900/40 border border-neutral-800 flex items-start gap-3 text-xs text-neutral-300">
-        <ShieldCheck className="w-4 h-4 text-sky-400 shrink-0 mt-0.5" />
+      <div className="p-4 rounded-[10px] bg-[var(--surface-panel)] border border-[var(--border-subtle)] flex items-start gap-3 text-xs text-[var(--text-secondary)]">
+        <ShieldCheck className="w-4 h-4 text-[var(--accent-primary)] shrink-0 mt-0.5" />
         <p className="leading-relaxed">
-          Official sources like <code className="text-sky-300 font-mono">winget</code> and <code className="text-sky-300 font-mono">msstore</code> are cryptographically verified by Microsoft before ingestion. Custom third-party sources should only be added if you explicitly trust the provider.
+          Official sources (<code className="font-mono text-[var(--accent-primary)]">winget</code> and{' '}
+          <code className="font-mono text-[var(--accent-primary)]">msstore</code>) are maintained by Microsoft. Custom repositories execute native{' '}
+          <code className="font-mono text-[var(--text-primary)]">winget source</code> commands and should only be added from trusted organizations.
         </p>
       </div>
 
-      {/* Source Cards */}
+      {/* Sources List */}
       <div className="space-y-3">
-        {sources.map(source => (
-          <div
-            key={source.id}
-            className="p-5 rounded-xl bg-neutral-900/80 border border-neutral-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4"
-          >
-            <div className="flex items-start gap-3.5 min-w-0">
-              <div className="w-10 h-10 rounded-lg bg-neutral-800 border border-neutral-700 flex items-center justify-center shrink-0">
-                <Database className="w-5 h-5 text-sky-400" />
-              </div>
+        {sources.map(source => {
+          const isRemoving = busyAction === `remove:${source.id}`;
+          return (
+            <div
+              key={source.id}
+              className="p-5 rounded-[12px] bg-[var(--surface-panel)] border border-[var(--border-subtle)] flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-[var(--shadow-card)]"
+            >
+              <div className="flex items-start gap-3.5 min-w-0">
+                <div className="w-10 h-10 rounded-[8px] bg-[var(--surface-subtle)] border border-[var(--border-subtle)] flex items-center justify-center shrink-0">
+                  <Database className="w-5 h-5 text-[var(--accent-primary)]" />
+                </div>
 
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="font-semibold text-sm text-neutral-100">{source.name}</span>
-                  {source.isOfficial ? (
-                    <span className="text-[11px] font-mono text-emerald-400 flex items-center gap-1">
-                      <ShieldCheck className="w-3.5 h-3.5" /> Official Microsoft
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-semibold text-sm text-[var(--text-primary)]">
+                      {source.name}
                     </span>
-                  ) : (
-                    <span className="text-[11px] font-mono text-amber-400 flex items-center gap-1">
-                      <ShieldAlert className="w-3.5 h-3.5" /> Custom Source
-                    </span>
-                  )}
-                </div>
+                    <StatusBadge
+                      status={source.isOfficial ? 'verified' : 'community'}
+                      label={source.isOfficial ? 'Official Microsoft' : 'Custom Source'}
+                      compact
+                    />
+                  </div>
 
-                <div className="text-xs font-mono text-neutral-400 truncate mt-1">
-                  Argument: <span className="text-neutral-300">{source.arg}</span>
-                </div>
-
-                <div className="flex items-center gap-3 text-[11px] text-neutral-500 font-mono mt-1">
-                  <span>Packages: {source.packageCount.toLocaleString()}</span>
-                  <span>·</span>
-                  <span>Last synced: {source.lastUpdated}</span>
+                  <div className="text-xs font-mono text-[var(--text-secondary)] truncate mt-1 flex items-center gap-2">
+                    <span className="truncate">{source.arg}</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard?.writeText(source.arg);
+                        showToast({ title: 'Endpoint Copied', description: source.arg, tone: 'info' });
+                      }}
+                      aria-label={`Copy endpoint URL for ${source.name}`}
+                      className="text-[var(--text-muted)] hover:text-[var(--accent-primary)] cursor-pointer shrink-0"
+                    >
+                      <Copy className="w-3 h-3" />
+                    </button>
+                  </div>
                 </div>
               </div>
-            </div>
-
-            {/* Actions */}
-            <div className="flex items-center gap-3 shrink-0">
-              <label className="flex items-center gap-2 text-xs text-neutral-300 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={source.enabled}
-                  onChange={() => handleToggleSource(source.id)}
-                  className="w-4 h-4 rounded bg-neutral-800 border-neutral-700 text-sky-500 focus:ring-0 cursor-pointer"
-                />
-                <span>Enabled</span>
-              </label>
 
               {!source.isOfficial && (
-                <button
-                  onClick={() => handleRemoveSource(source.id)}
-                  title="Remove custom source"
-                  className="p-1.5 text-neutral-500 hover:text-red-400 rounded-lg hover:bg-neutral-800 transition-colors"
+                <Button
+                  size="sm"
+                  variant="danger"
+                  loading={isRemoving}
+                  disabled={busy}
+                  leftIcon={<Trash2 className="w-3.5 h-3.5" />}
+                  onClick={() => setSourceToRemove(source)}
                 >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+                  Remove
+                </Button>
               )}
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
-      {/* Modal: Add Source */}
-      {showAddModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
-          <div className="w-full max-w-lg bg-neutral-900 border border-neutral-800 rounded-2xl p-6 space-y-4 shadow-2xl">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-neutral-100">Add WinGet Package Source</h3>
-              <button
-                onClick={() => setShowAddModal(false)}
-                className="text-neutral-400 hover:text-white"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
+      {/* Add Source Dialog */}
+      <Dialog
+        isOpen={showAddModal}
+        onClose={() => setShowAddModal(false)}
+        title="Add WinGet Package Source"
+        subtitle="Register an HTTPS WinGet source repository."
+        maxWidthClass="max-w-lg"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setShowAddModal(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              loading={busyAction === 'add'}
+              onClick={handleAddSource}
+            >
+              Add &amp; Verify Source
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-3 text-xs">
+          {validationError && <ErrorState title="Validation Error" message={validationError} />}
 
-            {validationError && (
-              <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-xs text-red-400">
-                {validationError}
-              </div>
-            )}
+          <div>
+            <label className="text-[var(--text-secondary)] block mb-1 font-medium">
+              Source Name
+            </label>
+            <input
+              type="text"
+              value={sourceName}
+              onChange={e => setSourceName(e.target.value)}
+              placeholder="e.g. enterprise-internal"
+              className="w-full h-9 px-3 bg-[var(--surface-input)] border border-[var(--border-subtle)] focus:border-[var(--border-focus)] rounded-[8px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none"
+            />
+          </div>
 
-            <div className="space-y-3 text-xs">
-              <div>
-                <label className="text-neutral-300 block mb-1">Source Name</label>
-                <input
-                  type="text"
-                  value={sourceName}
-                  onChange={e => setSourceName(e.target.value)}
-                  placeholder="e.g. enterprise-internal"
-                  className="w-full px-3 py-2 bg-neutral-950 border border-neutral-800 rounded-lg text-neutral-100 focus:outline-none"
-                />
-              </div>
+          <div>
+            <label className="text-[var(--text-secondary)] block mb-1 font-medium">
+              Repository Feed URL (HTTPS)
+            </label>
+            <input
+              type="url"
+              value={sourceUrl}
+              onChange={e => setSourceUrl(e.target.value)}
+              placeholder="https://packages.example.com/feed"
+              className="w-full h-9 px-3 bg-[var(--surface-input)] border border-[var(--border-subtle)] focus:border-[var(--border-focus)] rounded-[8px] font-mono text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none"
+            />
+          </div>
 
-              <div>
-                <label className="text-neutral-300 block mb-1">Repository Feed URL (HTTPS)</label>
-                <input
-                  type="url"
-                  value={sourceUrl}
-                  onChange={e => setSourceUrl(e.target.value)}
-                  placeholder="https://packages.example.com/feed"
-                  className="w-full px-3 py-2 bg-neutral-950 border border-neutral-800 rounded-lg text-neutral-100 focus:outline-none font-mono"
-                />
-              </div>
-
-              <div className="p-3 rounded-lg bg-neutral-950 text-neutral-400 text-[11px] font-mono">
-                Command: winget source add "{sourceName || '<name>'}" "{sourceUrl || '<url>'}"
-              </div>
-            </div>
-
-            <div className="flex items-center justify-end gap-2 pt-2">
-              <button
-                onClick={() => setShowAddModal(false)}
-                className="px-3 py-1.5 text-xs text-neutral-400 hover:text-white"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleAddSource}
-                className="px-4 py-1.5 text-xs font-semibold text-neutral-950 bg-sky-400 hover:bg-sky-300 rounded-lg transition-colors"
-              >
-                Add & Verify Source
-              </button>
-            </div>
+          <div className="p-3 rounded-[8px] bg-[var(--surface-subtle)] border border-[var(--border-subtle)] text-[var(--text-secondary)] text-[11px] font-mono break-all">
+            winget source add --name &quot;{sourceName || '<name>'}&quot; --arg &quot;
+            {sourceUrl || '<url>'}&quot;
           </div>
         </div>
-      )}
+      </Dialog>
+
+      <ConfirmationDialog
+        isOpen={confirmReset}
+        onCancel={() => setConfirmReset(false)}
+        onConfirm={handleResetToDefault}
+        title="Reset Package Sources"
+        description="Restore WinGet sources back to Microsoft defaults (winget & msstore) and remove custom sources?"
+        confirmLabel="Reset Sources"
+        tone="danger"
+      />
+
+      <ConfirmationDialog
+        isOpen={Boolean(sourceToRemove)}
+        onCancel={() => setSourceToRemove(null)}
+        onConfirm={handleRemoveSource}
+        title="Remove Package Source"
+        description={
+          sourceToRemove
+            ? `Execute winget source remove for "${sourceToRemove.name}"?`
+            : ''
+        }
+        confirmLabel="Remove Source"
+        tone="danger"
+      />
     </div>
   );
 };
