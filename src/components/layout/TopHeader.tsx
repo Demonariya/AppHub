@@ -43,7 +43,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
   onToggleMobileMenu,
 }) => {
   return (
-    <header className="h-13 border-b border-[var(--border-subtle)] bg-[var(--surface-shell)]/90 backdrop-blur-md px-3 sm:px-6 flex items-center justify-between gap-3 shrink-0 z-30">
+    <header className="h-[var(--header-h,52px)] border-b border-[var(--border-subtle)] bg-[var(--surface-shell)]/90 backdrop-blur-md px-3 sm:px-6 flex items-center justify-between gap-3 shrink-0 z-30">
       {/* Left: Mobile Menu + Breadcrumb Trail */}
       <div className="flex items-center gap-2 text-xs text-[var(--text-secondary)] min-w-0">
         {onToggleMobileMenu && (

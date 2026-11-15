@@ -1,18 +1,57 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OperationPhase {
+    Queued,
+    Preparing,
+    Downloading,
+    Verifying,
+    Installing,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OperationStatus {
+    Queued,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WinGetPackage {
     pub id: String,
     pub name: String,
-    pub publisher: String,
+    pub publisher: Option<String>,
+    pub author: Option<String>,
     pub version: String,
     pub latest_version: String,
-    pub description: String,
-    pub category: String,
+    pub description: Option<String>,
+    pub category: Option<String>,
     pub source: String,
+    pub tags: Vec<String>,
     pub architectures: Vec<String>,
-    pub license: String,
+    pub license: Option<String>,
+    pub license_url: Option<String>,
     pub homepage: Option<String>,
+    pub publisher_url: Option<String>,
+    pub release_date: Option<String>,
+    pub release_notes: Option<String>,
+    pub installer_type: Option<String>,
+    pub installer_url: Option<String>,
+    pub installer_sha256: Option<String>,
+    pub download_size_bytes: Option<u64>,
+    pub installed_size_bytes: Option<u64>,
+    pub verified: bool,
+    pub metadata_status: String,
+    pub is_available: bool,
+    pub last_observed_at: i64,
+    pub last_metadata_refresh_at: Option<i64>,
     pub is_installed: bool,
     pub installed_version: Option<String>,
     pub is_pinned: bool,
@@ -26,6 +65,7 @@ pub struct WinGetInstalledApp {
     pub available_version: Option<String>,
     pub source: Option<String>,
     pub is_winget_managed: bool,
+    pub installed_size_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,10 +81,10 @@ pub struct WinGetUpgradeInfo {
 pub struct WinGetShowDetails {
     pub id: String,
     pub name: String,
-    pub publisher: String,
+    pub publisher: Option<String>,
     pub version: String,
     pub author: Option<String>,
-    pub description: String,
+    pub description: Option<String>,
     pub homepage: Option<String>,
     pub publisher_url: Option<String>,
     pub license: Option<String>,
@@ -54,6 +94,7 @@ pub struct WinGetShowDetails {
     pub installer_type: Option<String>,
     pub installer_url: Option<String>,
     pub installer_sha256: Option<String>,
+    pub download_size_bytes: Option<u64>,
     pub architectures: Vec<String>,
     pub tags: Vec<String>,
 }
@@ -64,6 +105,107 @@ pub struct WinGetSource {
     pub argument: String,
     pub source_type: String,
     pub is_official: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CatalogSourceStatus {
+    pub name: String,
+    pub argument: String,
+    pub source_type: String,
+    pub is_official: bool,
+    pub is_enabled: bool,
+    pub last_sync_at: Option<i64>,
+    pub last_status: String,
+    pub last_error: Option<String>,
+    pub package_count: usize,
+    pub is_complete: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourceSyncOutcome {
+    pub source_name: String,
+    pub source_type: String,
+    pub is_official: bool,
+    pub status: String, // "completed" | "partial" | "failed" | "skipped" | "agreement_required" | "cancelled"
+    pub command_executed: String,
+    pub exit_code: Option<i32>,
+    pub discovered_count: usize,
+    pub inserted_count: usize,
+    pub updated_count: usize,
+    pub unchanged_count: usize,
+    pub unavailable_count: usize,
+    pub is_complete: bool,
+    pub truncation_reason: Option<String>,
+    pub error: Option<String>,
+    pub started_at: i64,
+    pub completed_at: i64,
+    pub duration_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CatalogSyncResult {
+    pub run_id: String,
+    pub started_at: i64,
+    pub completed_at: i64,
+    pub duration_ms: i64,
+    pub total_discovered: usize,
+    pub newly_discovered: usize,
+    pub updated_records: usize,
+    pub unchanged_records: usize,
+    pub unavailable_records: usize,
+    pub succeeded_sources: Vec<String>,
+    pub failed_sources: Vec<String>,
+    pub source_outcomes: Vec<SourceSyncOutcome>,
+    pub is_complete: bool,
+    pub is_partial: bool,
+    pub cancelled: bool,
+    pub agreement_required: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CatalogSyncProgressEvent {
+    pub run_id: String,
+    pub phase: String, // "discovering-sources" | "syncing-source" | "reconciling" | "completed" | "failed" | "cancelled"
+    pub current_source: Option<String>,
+    pub sources_completed: usize,
+    pub sources_total: usize,
+    pub packages_discovered: usize,
+    pub message: String,
+    pub is_indeterminate: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CatalogSyncRunRecord {
+    pub run_id: String,
+    pub started_at: i64,
+    pub completed_at: Option<i64>,
+    pub duration_ms: Option<i64>,
+    pub status: String,
+    pub total_discovered: usize,
+    pub newly_discovered: usize,
+    pub updated_records: usize,
+    pub unchanged_records: usize,
+    pub unavailable_records: usize,
+    pub is_complete: bool,
+    pub is_partial: bool,
+    pub cancelled: bool,
+    pub error: Option<String>,
+    pub outcomes: Vec<SourceSyncOutcome>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CatalogCacheStats {
+    pub total_packages: usize,
+    pub available_packages: usize,
+    pub enriched_packages: usize,
+    pub last_sync_at: Option<i64>,
+    pub last_attempted_sync_at: Option<i64>,
+    pub last_sync_complete: bool,
+    pub last_sync_error: Option<String>,
+    pub source_counts: Vec<(String, usize)>,
+    pub category_counts: Vec<(String, usize)>,
+    pub db_size_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,12 +220,19 @@ pub struct CommandOutputPayload {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WinGetOutputEvent {
     pub task_id: String,
+    pub event_sequence: u64,
     pub stream: String,
     pub line: String,
     pub progress: Option<u8>,
+    pub progress_percent: Option<f64>,
     pub is_indeterminate: bool,
+    pub bytes_downloaded: Option<u64>,
+    pub total_bytes: Option<u64>,
     pub download_speed: Option<String>,
-    pub phase: Option<String>,
+    pub phase: Option<OperationPhase>,
+    pub status: OperationStatus,
+    pub message: Option<String>,
+    pub timestamp: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,6 +247,12 @@ pub struct HistoryRecord {
     pub exit_code: Option<i32>,
     pub start_time: i64,
     pub end_time: Option<i64>,
+    #[serde(default)]
+    pub queued_at: Option<i64>,
+    #[serde(default)]
+    pub started_at: Option<i64>,
+    #[serde(default)]
+    pub ended_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,4 +264,43 @@ pub struct CollectionRecord {
     pub package_ids: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IconCacheRecord {
+    pub cache_key: String,
+    pub package_id: String,
+    pub source: String,
+    pub source_type: String,
+    pub resolved_url: Option<String>,
+    pub local_path: Option<String>,
+    pub mime_type: Option<String>,
+    pub sha256: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub status: String, // "verified" | "failed"
+    pub error_message: Option<String>,
+    pub fetched_at: i64,
+    pub expires_at: i64,
+    pub verified: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IconResolveResponse {
+    pub cache_key: String,
+    pub package_id: String,
+    pub source: String,
+    pub source_type: String,
+    pub resolved_url: Option<String>,
+    pub data_uri: Option<String>,
+    pub mime_type: Option<String>,
+    pub sha256: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub status: String, // "verified" | "failed"
+    pub error_message: Option<String>,
+    pub fetched_at: i64,
+    pub expires_at: i64,
+    pub verified: bool,
+    pub from_cache: bool,
 }

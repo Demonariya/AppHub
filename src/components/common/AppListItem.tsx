@@ -115,11 +115,28 @@ export const AppListItem: React.FC<AppListItemProps> = ({
         </div>
       </div>
 
-      {/* Middle: Source & Versions */}
+      {/* Middle: Source, Size & Versions */}
       <div className="hidden md:flex items-center gap-6 text-xs text-[var(--text-secondary)] font-mono tabular-nums shrink-0">
         <div className="w-24 truncate">{pkg.isExternal ? 'Local' : pkg.source}</div>
 
-        <div className="w-28 text-right truncate">
+        <div
+          className="w-20 text-right truncate"
+          title={
+            pkg.isInstalled && pkg.formattedInstalledSize
+              ? 'Installed disk footprint'
+              : 'Installer download size'
+          }
+        >
+          {pkg.isInstalled
+            ? pkg.formattedInstalledSize || pkg.formattedDownloadSize || pkg.formattedSize || (
+                <span className="text-[var(--text-muted)]">—</span>
+              )
+            : pkg.formattedDownloadSize || pkg.formattedSize || (
+                <span className="text-[var(--text-muted)]">—</span>
+              )}
+        </div>
+
+        <div className="w-24 text-right truncate">
           {pkg.isInstalled ? (
             <span>v{pkg.installedVersion}</span>
           ) : (
@@ -127,7 +144,7 @@ export const AppListItem: React.FC<AppListItemProps> = ({
           )}
         </div>
 
-        <div className="w-28 text-right text-[var(--text-primary)] truncate">
+        <div className="w-24 text-right text-[var(--text-primary)] truncate">
           <span>v{pkg.latestVersion}</span>
         </div>
       </div>

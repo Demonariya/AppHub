@@ -216,7 +216,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   return (
     <>
       <aside
-        className={`hidden md:flex h-[calc(100vh-2.25rem)] bg-[var(--surface-shell)] border-r border-[var(--border-subtle)] flex-col justify-between transition-all duration-200 select-none shrink-0 ${
+        className={`hidden md:flex h-[calc(100vh-var(--titlebar-h,36px))] bg-[var(--surface-shell)] border-r border-[var(--border-subtle)] flex-col justify-between transition-all duration-200 select-none shrink-0 ${
           isCompact ? 'w-16' : 'w-56'
         }`}
       >

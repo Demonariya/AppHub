@@ -84,20 +84,21 @@ export const QuickSearchModal: React.FC<QuickSearchModalProps> = ({
         p =>
           p.name.toLowerCase().includes(trimmed) ||
           p.id.toLowerCase().includes(trimmed) ||
-          p.publisher.toLowerCase().includes(trimmed) ||
+          (p.publisher || '').toLowerCase().includes(trimmed) ||
           p.category.toLowerCase().includes(trimmed) ||
           p.tags.some(t => t.toLowerCase().includes(trimmed))
       )
     : [];
 
   const mergedMap = new Map<string, Package>();
+  const getKey = (p: Package) => p.packageKey || `${p.source.toLowerCase()}::${p.id.toLowerCase()}`;
   for (const p of localMatches) {
-    mergedMap.set(p.id.toLowerCase(), p);
+    mergedMap.set(getKey(p), p);
   }
-  const byIdAll = new Map(packages.map(p => [p.id.toLowerCase(), p]));
+  const byKeyAll = new Map(packages.map(p => [getKey(p), p]));
   for (const r of liveResults) {
-    const key = r.id.toLowerCase();
-    const known = byIdAll.get(key);
+    const key = getKey(r);
+    const known = byKeyAll.get(key);
     mergedMap.set(
       key,
       known ? { ...r, ...known, version: r.version || known.version } : r
@@ -196,7 +197,7 @@ export const QuickSearchModal: React.FC<QuickSearchModalProps> = ({
                   </div>
                   {results.map((pkg, idx) => (
                     <button
-                      key={pkg.id}
+                      key={pkg.packageKey || `${pkg.source}::${pkg.id}`}
                       type="button"
                       onClick={() => handleSelect(pkg)}
                       onMouseEnter={() => setSelectedIndex(idx)}
@@ -219,7 +220,8 @@ export const QuickSearchModal: React.FC<QuickSearchModalProps> = ({
                             )}
                           </div>
                           <div className="text-[11px] text-[var(--text-muted)] font-mono truncate mt-0.5">
-                            {pkg.id} · {pkg.publisher} · v{pkg.latestVersion}
+                            {pkg.id}
+                            {pkg.publisher ? ` · ${pkg.publisher}` : ` · ${pkg.source}`} · v{pkg.latestVersion}
                           </div>
                         </div>
                       </div>

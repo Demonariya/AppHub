@@ -1,8 +1,19 @@
-import React from 'react';
-import { Package, TaskAction, WinGetEnvironment, CategoryType } from '../types';
+import React, { useMemo } from 'react';
+import {
+  Package,
+  TaskAction,
+  WinGetEnvironment,
+  CategoryType,
+  CatalogCacheStats,
+  CatalogSyncProgress,
+  CatalogSyncResult,
+  CatalogSyncRunRecord,
+} from '../types';
 import { AppCard } from '../components/common/AppCard';
 import { AppIconImage } from '../components/common/AppIconImage';
+import { CatalogSyncBanner } from '../components/common/CatalogSyncBanner';
 import { isTauriEnvironment } from '../services/tauriBridge';
+import { storage } from '../services/storage';
 import {
   ArrowUpCircle,
   Clock,
@@ -18,12 +29,22 @@ import {
   Info,
   Search,
   Compass,
+  Eye,
+  Database,
 } from 'lucide-react';
 import { Button, SectionHeader, EmptyState } from '../components/ui';
 
 interface HomePageProps {
   packages: Package[];
   environment?: WinGetEnvironment;
+  isSyncing: boolean;
+  syncProgress: CatalogSyncProgress | null;
+  lastSyncResult: CatalogSyncResult | null;
+  syncHistory: CatalogSyncRunRecord[];
+  catalogStats: CatalogCacheStats;
+  onStartSync: (targetSources?: string[]) => void;
+  onCancelSync: () => void;
+  onAcceptAgreementsAndSync: () => void;
   onOpenDetails: (pkg: Package) => void;
   onActionClick: (pkg: Package, action: TaskAction) => void;
   onToggleFavorite?: (pkg: Package) => void;
@@ -35,18 +56,17 @@ interface HomePageProps {
   onOpenQuickSearch?: () => void;
 }
 
-const QUICK_CATEGORIES: CategoryType[] = [
-  'Development',
-  'Browsers',
-  'Utilities',
-  'Security',
-  'Multimedia',
-  'Productivity',
-];
-
 export const HomePage: React.FC<HomePageProps> = ({
   packages,
   environment,
+  isSyncing,
+  syncProgress,
+  lastSyncResult,
+  syncHistory,
+  catalogStats,
+  onStartSync,
+  onCancelSync,
+  onAcceptAgreementsAndSync,
   onOpenDetails,
   onActionClick,
   onToggleFavorite,
@@ -59,27 +79,99 @@ export const HomePage: React.FC<HomePageProps> = ({
 }) => {
   const isDesktop = isTauriEnvironment();
 
-  const updateAvailablePackages = packages.filter(
-    p =>
-      !p.isExternal &&
-      p.isInstalled &&
-      p.installedVersion &&
-      p.latestVersion &&
-      p.installedVersion !== p.latestVersion
+  const updateAvailablePackages = useMemo(
+    () =>
+      packages.filter(
+        p =>
+          !p.isExternal &&
+          p.isInstalled &&
+          p.installedVersion &&
+          p.latestVersion &&
+          p.installedVersion !== p.latestVersion
+      ),
+    [packages]
   );
 
-  const featured = packages.find(p => p.id === 'Microsoft.VisualStudioCode') || packages[0];
-  const devTools = packages
-    .filter(p => p.category === 'Development' && p.id !== featured?.id)
-    .slice(0, 4);
-  const recentlyPublished = [...packages]
-    .filter(p => Boolean(p.releaseDate))
-    .sort((a, b) => (b.releaseDate || '').localeCompare(a.releaseDate || ''))
-    .slice(0, 4);
-  const utilitiesAndSecurity = packages
-    .filter(p => p.category === 'Utilities' || p.category === 'Security')
-    .slice(0, 4);
-  const installed = packages.filter(p => p.isInstalled).slice(0, 4);
+  // Dynamically pick spotlight from real synced catalog (preferring verified non-external enriched packages)
+  const featured = useMemo(() => {
+    const candidates = packages.filter(p => !p.isExternal);
+    return (
+      candidates.find(p => p.verified && Boolean(p.description) && p.metadataStatus === 'enriched') ||
+      candidates.find(p => p.verified && Boolean(p.description)) ||
+      candidates.find(p => p.verified) ||
+      candidates[0]
+    );
+  }, [packages]);
+
+  const dynamicCategories = useMemo(() => {
+    const counts = new Map<CategoryType, number>();
+    for (const p of packages) {
+      if (p.category === 'Uncategorized') continue;
+      counts.set(p.category, (counts.get(p.category) || 0) + 1);
+    }
+    return Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6);
+  }, [packages]);
+
+  const recentlyViewed = useMemo(() => {
+    const ids = storage.getRecentlyViewedIds();
+    if (ids.length === 0) return [];
+    const byId = new Map<string, Package>();
+    for (const p of packages) {
+      const k = p.id.toLowerCase();
+      if (!byId.has(k)) byId.set(k, p);
+    }
+    return ids
+      .map(id => byId.get(id.toLowerCase()))
+      .filter((p): p is Package => Boolean(p))
+      .slice(0, 4);
+  }, [packages]);
+
+  const devTools = useMemo(
+    () =>
+      packages
+        .filter(
+          p =>
+            p.category === 'Development' &&
+            (p.packageKey || `${p.source}::${p.id}`) !==
+              (featured ? featured.packageKey || `${featured.source}::${featured.id}` : '')
+        )
+        .slice(0, 4),
+    [packages, featured]
+  );
+
+  const recentlyPublished = useMemo(
+    () =>
+      [...packages]
+        .filter(p => Boolean(p.releaseDate))
+        .sort((a, b) => (b.releaseDate || '').localeCompare(a.releaseDate || ''))
+        .slice(0, 4),
+    [packages]
+  );
+
+  const syncedCatalogPreview = useMemo(
+    () =>
+      packages
+        .filter(
+          p =>
+            !p.isExternal &&
+            (p.packageKey || `${p.source}::${p.id}`) !==
+              (featured ? featured.packageKey || `${featured.source}::${featured.id}` : '')
+        )
+        .slice(0, 8),
+    [packages, featured]
+  );
+
+  const utilitiesAndSecurity = useMemo(
+    () =>
+      packages
+        .filter(p => p.category === 'Utilities' || p.category === 'Security')
+        .slice(0, 4),
+    [packages]
+  );
+
+  const installed = useMemo(() => packages.filter(p => p.isInstalled).slice(0, 4), [packages]);
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-8 animate-page-in">
@@ -128,7 +220,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                 Microsoft WinGet CLI Not Detected
               </h2>
               <p className="text-xs text-[var(--text-secondary)] mt-0.5 leading-relaxed">
-                AppHub requires <code className="font-mono text-[var(--status-danger-fg)]">winget.exe</code> to install, update, and query packages. Install App Installer from Microsoft or set a custom executable path in Settings.
+                AppHub requires <code className="font-mono text-[var(--status-danger-fg)]">winget.exe</code> to synchronize repositories, install, update, and query packages. Install App Installer from Microsoft or set a custom executable path in Settings.
               </p>
               {environment.error && (
                 <p className="text-[11px] font-mono text-[var(--status-danger-fg)] mt-1">
@@ -167,13 +259,28 @@ export const HomePage: React.FC<HomePageProps> = ({
         </div>
       )}
 
+      {/* Desktop Sync Status Banner */}
+      {isDesktop && environment?.isInstalled && (
+        <CatalogSyncBanner
+          compact={packages.length > 0}
+          isSyncing={isSyncing}
+          syncProgress={syncProgress}
+          lastSyncResult={lastSyncResult}
+          syncHistory={syncHistory}
+          catalogStats={catalogStats}
+          onStartSync={onStartSync}
+          onCancelSync={onCancelSync}
+          onAcceptAgreementsAndSync={onAcceptAgreementsAndSync}
+        />
+      )}
+
       {/* Non-intrusive Browser Preview Notice */}
       {!isDesktop && (
         <div className="rounded-[10px] px-4 py-3 bg-[var(--accent-soft)] border border-[var(--accent-border)] flex items-start gap-3 text-xs text-[var(--text-secondary)]">
           <Info className="w-4 h-4 text-[var(--accent-primary)] shrink-0 mt-0.5" />
           <p className="leading-relaxed">
             <strong className="text-[var(--text-primary)] font-semibold">Browser Preview Mode:</strong>{' '}
-            Catalog browsing, CLI command preview, manifest import/export, and preferences are interactive here. Native WinGet installations and local inventory scanning require the AppHub Windows desktop app.
+            Catalog synchronization, CLI command execution, and local WinGet inventory scanning require the AppHub Windows desktop application.
           </p>
         </div>
       )}
@@ -207,6 +314,35 @@ export const HomePage: React.FC<HomePageProps> = ({
         </div>
       )}
 
+      {/* Empty Catalog Prompt (when no static fallback exists) */}
+      {packages.length === 0 && !isSyncing && (
+        <EmptyState
+          icon={<Database className="w-5 h-5" />}
+          title={
+            isDesktop
+              ? 'WinGet Catalog Not Synchronized Yet'
+              : 'No Cached Catalog in Browser Preview'
+          }
+          description={
+            isDesktop
+              ? 'AppHub fetches applications directly from your configured WinGet sources without hardcoded placeholder packages.'
+              : 'Launch the AppHub Windows desktop app to synchronize packages from official Microsoft WinGet and Store repositories.'
+          }
+          action={
+            isDesktop ? (
+              <Button
+                size="md"
+                variant="primary"
+                leftIcon={<RefreshCw className="w-4 h-4" />}
+                onClick={() => onStartSync()}
+              >
+                Sync Full Catalog Now
+              </Button>
+            ) : undefined
+          }
+        />
+      )}
+
       {/* Spotlight Package */}
       {featured && (
         <div
@@ -219,14 +355,14 @@ export const HomePage: React.FC<HomePageProps> = ({
               onOpenDetails(featured);
             }
           }}
-          className="rounded-[14px] border border-[var(--border-subtle)] hover:border-[var(--border-strong)] bg-[var(--surface-panel)] p-6 sm:p-7 cursor-pointer group shadow-[var(--shadow-card)] transition-all"
+          className="rounded-[14px] border border-[var(--border-subtle)] hover:border-[var(--border-strong)] bg-[var(--surface-panel)] p-5 sm:p-6 cursor-pointer group shadow-[var(--shadow-card)] transition-all"
         >
           <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
             <div className="space-y-3 max-w-2xl">
               <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--text-secondary)] font-mono">
-                <span className="text-[var(--accent-primary)] font-semibold">Featured</span>
+                <span className="text-[var(--accent-primary)] font-semibold">Spotlight</span>
                 <span className="text-[var(--text-muted)]">·</span>
-                <span>{featured.publisher}</span>
+                <span>{featured.publisher || featured.source}</span>
                 <span className="text-[var(--text-muted)]">·</span>
                 <span className="tabular-nums">v{featured.latestVersion}</span>
                 {(featured.formattedDownloadSize || featured.formattedSize) && (
@@ -242,7 +378,9 @@ export const HomePage: React.FC<HomePageProps> = ({
               </h2>
 
               <p className="text-[13px] text-[var(--text-secondary)] leading-relaxed">
-                {featured.longDescription || featured.description}
+                {featured.longDescription ||
+                  featured.description ||
+                  `Package identifier ${featured.id} from ${featured.source}. Open details to query full WinGet manifest metadata.`}
               </p>
 
               <div className="flex flex-wrap items-center gap-3 pt-1" onClick={e => e.stopPropagation()}>
@@ -277,8 +415,8 @@ export const HomePage: React.FC<HomePageProps> = ({
         </div>
       )}
 
-      {/* Quick Category Shortcuts */}
-      {onNavigateToCategory && (
+      {/* Dynamic Category Shortcuts (only categories with real packages) */}
+      {onNavigateToCategory && dynamicCategories.length > 0 && (
         <section className="space-y-3">
           <SectionHeader
             title="Browse by Category"
@@ -294,24 +432,42 @@ export const HomePage: React.FC<HomePageProps> = ({
             }
           />
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
-            {QUICK_CATEGORIES.map(cat => {
-              const count = packages.filter(p => p.category === cat).length;
-              return (
-                <button
-                  key={cat}
-                  type="button"
-                  onClick={() => onNavigateToCategory(cat)}
-                  className="p-3 rounded-[10px] bg-[var(--surface-panel)] hover:bg-[var(--surface-hover)] border border-[var(--border-subtle)] hover:border-[var(--border-strong)] text-left transition-colors cursor-pointer"
-                >
-                  <div className="text-xs font-semibold text-[var(--text-primary)] truncate">
-                    {cat}
-                  </div>
-                  <div className="text-[11px] font-mono text-[var(--text-muted)] mt-0.5 tabular-nums">
-                    {count} packages
-                  </div>
-                </button>
-              );
-            })}
+            {dynamicCategories.map(([cat, count]) => (
+              <button
+                key={cat}
+                type="button"
+                onClick={() => onNavigateToCategory(cat)}
+                className="p-3 rounded-[10px] bg-[var(--surface-panel)] hover:bg-[var(--surface-hover)] border border-[var(--border-subtle)] hover:border-[var(--border-strong)] text-left transition-colors cursor-pointer"
+              >
+                <div className="text-xs font-semibold text-[var(--text-primary)] truncate">
+                  {cat}
+                </div>
+                <div className="text-[11px] font-mono text-[var(--text-muted)] mt-0.5 tabular-nums">
+                  {count} {count === 1 ? 'package' : 'packages'}
+                </div>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Recently Viewed */}
+      {recentlyViewed.length > 0 && (
+        <section className="space-y-3.5">
+          <SectionHeader
+            title="Recently Viewed"
+            icon={<Eye className="w-4 h-4 text-[var(--accent-primary)]" />}
+          />
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {recentlyViewed.map(pkg => (
+              <AppCard
+                key={pkg.packageKey || `${pkg.source}::${pkg.id}`}
+                pkg={pkg}
+                onOpenDetails={onOpenDetails}
+                onActionClick={onActionClick}
+                onToggleFavorite={onToggleFavorite}
+              />
+            ))}
           </div>
         </section>
       )}
@@ -336,7 +492,7 @@ export const HomePage: React.FC<HomePageProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {devTools.map(pkg => (
               <AppCard
-                key={pkg.id}
+                key={pkg.packageKey || `${pkg.source}::${pkg.id}`}
                 pkg={pkg}
                 onOpenDetails={onOpenDetails}
                 onActionClick={onActionClick}
@@ -357,7 +513,7 @@ export const HomePage: React.FC<HomePageProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {recentlyPublished.map(pkg => (
               <AppCard
-                key={pkg.id}
+                key={pkg.packageKey || `${pkg.source}::${pkg.id}`}
                 pkg={pkg}
                 onOpenDetails={onOpenDetails}
                 onActionClick={onActionClick}
@@ -378,7 +534,38 @@ export const HomePage: React.FC<HomePageProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {utilitiesAndSecurity.map(pkg => (
               <AppCard
-                key={pkg.id}
+                key={pkg.packageKey || `${pkg.source}::${pkg.id}`}
+                pkg={pkg}
+                onOpenDetails={onOpenDetails}
+                onActionClick={onActionClick}
+                onToggleFavorite={onToggleFavorite}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Synchronized WinGet Catalog Snapshot */}
+      {syncedCatalogPreview.length > 0 && (
+        <section className="space-y-3.5">
+          <SectionHeader
+            title="Synchronized WinGet Catalog"
+            icon={<Database className="w-4 h-4 text-[var(--accent-primary)]" />}
+            action={
+              <button
+                type="button"
+                onClick={onNavigateToDiscover}
+                className="text-xs text-[var(--text-secondary)] hover:text-[var(--accent-primary)] inline-flex items-center gap-1 transition-colors cursor-pointer"
+              >
+                <span>View all {packages.length} packages</span>
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            }
+          />
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {syncedCatalogPreview.map(pkg => (
+              <AppCard
+                key={pkg.packageKey || `${pkg.source}::${pkg.id}`}
                 pkg={pkg}
                 onOpenDetails={onOpenDetails}
                 onActionClick={onActionClick}
@@ -399,7 +586,7 @@ export const HomePage: React.FC<HomePageProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {installed.map(pkg => (
               <AppCard
-                key={pkg.id}
+                key={pkg.packageKey || `${pkg.source}::${pkg.id}`}
                 pkg={pkg}
                 onOpenDetails={onOpenDetails}
                 onActionClick={onActionClick}

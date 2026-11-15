@@ -1,23 +1,28 @@
 import React, { useState, useMemo } from 'react';
-import { InstallationTask, Package } from '../types';
+import { InstallationTask, OperationPhase, Package } from '../types';
 import {
   Activity,
   Clock,
   RotateCw,
-  X,
   Terminal,
   Trash2,
 } from 'lucide-react';
-import { AppIconImage } from '../components/common/AppIconImage';
+import { AppIcon } from '../components/icons';
+import {
+  ActiveOperationCard,
+  OperationStatus,
+  QueueTaskRow,
+  formatDurationMs,
+  formatExitCode,
+} from '../components/operations';
 import {
   PageHeader,
   SegmentedTabs,
-  StatusBadge,
-  OperationProgress,
   Button,
   EmptyState,
   ConfirmationDialog,
 } from '../components/ui';
+import { getPackageKey } from '../services/catalog';
 
 interface DownloadsPageProps {
   packages?: Package[];
@@ -27,6 +32,7 @@ interface DownloadsPageProps {
   historyTasks: InstallationTask[];
   onCancelTask: (taskId: string) => void;
   onRetryTask: (taskId: string) => void;
+  onClearQueue?: () => void;
   onClearHistory: () => void;
   onOpenTerminalForTask: (task: InstallationTask) => void;
 }
@@ -41,6 +47,7 @@ export const DownloadsPage: React.FC<DownloadsPageProps> = ({
   historyTasks,
   onCancelTask,
   onRetryTask,
+  onClearQueue,
   onClearHistory,
   onOpenTerminalForTask,
 }) => {
@@ -63,29 +70,16 @@ export const DownloadsPage: React.FC<DownloadsPageProps> = ({
     if (known) return known;
     return {
       id: task.packageId,
-      name: task.packageName,
-      publisher: task.packageId.split('.')[0] || 'WinGet',
-      version: task.version,
-      latestVersion: task.targetVersion || task.version,
-      description: '',
-      category: 'Utilities',
+      packageKey: getPackageKey(task.packageId, task.source || 'winget'),
+      name: task.packageName || task.packageId,
+      version: task.version || 'Unknown',
+      latestVersion: task.targetVersion || task.version || 'Unknown',
+      category: 'Uncategorized',
       tags: [],
-      source: 'winget',
-      architectures: ['x64'],
-      license: '',
-      homepage: '',
-      releaseDate: '',
-      verified: true,
+      source: task.source || 'winget',
+      architectures: [],
+      verified: false,
     };
-  };
-
-  const formatExitCode = (code?: number) => {
-    if (code === undefined || code === null) return null;
-    if (code === 0) return 'Exit 0';
-    if (code < 0 || code > 255) {
-      return `0x${(code >>> 0).toString(16).toUpperCase()}`;
-    }
-    return `Exit ${code}`;
   };
 
   const completedTasks = historyTasks.filter(t => t.status === 'completed');
@@ -152,110 +146,40 @@ export const DownloadsPage: React.FC<DownloadsPageProps> = ({
                 Currently Executing ({runningTasks.length})
               </h2>
               {runningTasks.map(task => (
-                <div
+                <ActiveOperationCard
                   key={task.id}
-                  className="p-5 rounded-[12px] bg-[var(--surface-panel)] border border-[var(--accent-border)] shadow-[var(--shadow-card)] space-y-4"
-                >
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                    <div className="flex items-center gap-3.5 min-w-0">
-                      <AppIconImage pkg={resolveTaskPkg(task)} size="md" />
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-semibold text-sm text-[var(--text-primary)] truncate">
-                            {task.packageName}
-                          </span>
-                          <StatusBadge status="running" label={task.action.toUpperCase()} compact />
-                        </div>
-                        <div className="text-xs text-[var(--text-muted)] font-mono mt-0.5 flex flex-wrap items-center gap-1.5">
-                          <span>{task.packageId}</span>
-                          <span>·</span>
-                          <span>v{task.targetVersion || task.version}</span>
-                          {task.flags.customLocation && (
-                            <>
-                              <span>·</span>
-                              <span className="truncate max-w-xs text-[var(--text-secondary)]">
-                                {task.flags.customLocation}
-                              </span>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2 shrink-0">
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        leftIcon={<Terminal className="w-3.5 h-3.5 text-[var(--accent-primary)]" />}
-                        onClick={() => onOpenTerminalForTask(task)}
-                      >
-                        Inspect Console
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="danger"
-                        leftIcon={<X className="w-3.5 h-3.5" />}
-                        onClick={() => onCancelTask(task.id)}
-                      >
-                        Cancel
-                      </Button>
-                    </div>
-                  </div>
-
-                  <OperationProgress
-                    status={task.status}
-                    progress={task.progress}
-                    isIndeterminate={task.isIndeterminate}
-                    downloadSpeed={task.downloadSpeed}
-                  />
-                </div>
+                  task={task}
+                  pkg={resolveTaskPkg(task)}
+                  onInspectConsole={onOpenTerminalForTask}
+                  onCancel={onCancelTask}
+                />
               ))}
             </section>
           )}
 
           <section className="space-y-3">
-            <h2 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)] flex items-center gap-2">
-              <Clock className="w-3.5 h-3.5" />
-              <span>Pending Queue ({queue.length})</span>
-            </h2>
+            <div className="flex items-center justify-between">
+              <h2 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)] flex items-center gap-2">
+                <Clock className="w-3.5 h-3.5" />
+                <span>Pending Queue ({queue.length})</span>
+              </h2>
+              {queue.length > 0 && onClearQueue && (
+                <Button size="sm" variant="ghost" onClick={onClearQueue}>
+                  Clear Queue
+                </Button>
+              )}
+            </div>
 
             {queue.length > 0 ? (
               <div className="rounded-[12px] border border-[var(--border-subtle)] divide-y divide-[var(--border-subtle)] bg-[var(--surface-panel)]">
                 {queue.map((task, index) => (
-                  <div
+                  <QueueTaskRow
                     key={task.id}
-                    className="p-3.5 flex items-center justify-between gap-4 hover:bg-[var(--surface-hover)]/60 transition-colors"
-                  >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <span className="text-xs font-mono text-[var(--text-muted)] w-6 tabular-nums">
-                        #{index + 1}
-                      </span>
-                      <AppIconImage pkg={resolveTaskPkg(task)} size="sm" />
-                      <div className="min-w-0">
-                        <div className="text-xs font-semibold text-[var(--text-primary)] truncate">
-                          {task.packageName}{' '}
-                          <span className="text-[var(--text-muted)] font-mono text-[11px] uppercase font-normal">
-                            · {task.action}
-                          </span>
-                        </div>
-                        <div className="text-[11px] font-mono text-[var(--text-muted)] truncate">
-                          {task.packageId} · v{task.targetVersion || task.version}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2 shrink-0">
-                      <StatusBadge status="queued" compact />
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        aria-label={`Cancel queued ${task.packageName}`}
-                        onClick={() => onCancelTask(task.id)}
-                      >
-                        <X className="w-3.5 h-3.5" />
-                      </Button>
-                    </div>
-                  </div>
+                    task={task}
+                    pkg={resolveTaskPkg(task)}
+                    position={index + 1}
+                    onCancel={onCancelTask}
+                  />
                 ))}
               </div>
             ) : (
@@ -282,19 +206,13 @@ export const DownloadsPage: React.FC<DownloadsPageProps> = ({
           {visibleHistory.length > 0 ? (
             <div className="rounded-[12px] border border-[var(--border-subtle)] divide-y divide-[var(--border-subtle)] bg-[var(--surface-panel)]">
               {visibleHistory.map(task => {
-                const isFailed = task.status === 'failed';
+                const phase = (task.phase || task.status) as OperationPhase;
+                const isFailed = phase === 'failed';
                 const exitLabel = formatExitCode(task.exitCode);
-                const durationSec =
-                  task.endTime && task.startTime
-                    ? `${Math.max(1, Math.round((task.endTime - task.startTime) / 1000))}s`
-                    : null;
-
-                const statusKind =
-                  task.status === 'completed'
-                    ? 'completed'
-                    : task.status === 'cancelled'
-                    ? 'cancelled'
-                    : 'failed';
+                const queuedAt = task.queuedAt ?? task.startTime;
+                const startedAt = task.startedAt ?? task.startTime;
+                const endedAt = task.endedAt ?? task.endTime;
+                const durationLabel = formatDurationMs(startedAt, endedAt);
 
                 return (
                   <div
@@ -302,7 +220,7 @@ export const DownloadsPage: React.FC<DownloadsPageProps> = ({
                     className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:bg-[var(--surface-hover)]/60 transition-colors"
                   >
                     <div className="flex items-start sm:items-center gap-3 min-w-0">
-                      <AppIconImage pkg={resolveTaskPkg(task)} size="sm" />
+                      <AppIcon pkg={resolveTaskPkg(task)} size="sm" />
 
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
@@ -312,7 +230,7 @@ export const DownloadsPage: React.FC<DownloadsPageProps> = ({
                           <span className="text-[11px] font-mono uppercase text-[var(--text-muted)]">
                             {task.action}
                           </span>
-                          <StatusBadge status={statusKind} compact />
+                          <OperationStatus phase={phase} compact />
                           {exitLabel && (
                             <span className="text-[11px] font-mono text-[var(--text-muted)] tabular-nums">
                               {exitLabel}
@@ -320,16 +238,30 @@ export const DownloadsPage: React.FC<DownloadsPageProps> = ({
                           )}
                         </div>
 
-                        <div className="text-[11px] font-mono text-[var(--text-secondary)] flex flex-wrap items-center gap-1.5 mt-1">
+                        <div className="text-[11px] font-mono text-[var(--text-secondary)] flex flex-wrap items-center gap-x-1.5 gap-y-0.5 mt-1 tabular-nums">
                           <span>{task.packageId}</span>
-                          <span className="text-[var(--text-muted)]">·</span>
-                          <span className="tabular-nums">
-                            {new Date(task.startTime).toLocaleTimeString()}
-                          </span>
-                          {durationSec && (
+                          {queuedAt && (
                             <>
                               <span className="text-[var(--text-muted)]">·</span>
-                              <span className="tabular-nums">{durationSec}</span>
+                              <span>Queued {new Date(queuedAt).toLocaleTimeString()}</span>
+                            </>
+                          )}
+                          {task.startedAt && (
+                            <>
+                              <span className="text-[var(--text-muted)]">·</span>
+                              <span>Started {new Date(task.startedAt).toLocaleTimeString()}</span>
+                            </>
+                          )}
+                          {endedAt && (
+                            <>
+                              <span className="text-[var(--text-muted)]">·</span>
+                              <span>Ended {new Date(endedAt).toLocaleTimeString()}</span>
+                            </>
+                          )}
+                          {durationLabel && (
+                            <>
+                              <span className="text-[var(--text-muted)]">·</span>
+                              <span>{durationLabel}</span>
                             </>
                           )}
                         </div>

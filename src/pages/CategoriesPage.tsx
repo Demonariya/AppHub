@@ -14,8 +14,10 @@ import {
   Cpu,
   Archive,
   HardDrive,
+  Tag,
   ArrowRight,
   ChevronLeft,
+  RefreshCw,
 } from 'lucide-react';
 import { PageHeader, SearchInput, Button, EmptyState } from '../components/ui';
 
@@ -26,6 +28,8 @@ interface CategoriesPageProps {
   onOpenDetails: (pkg: Package) => void;
   onActionClick: (pkg: Package, action: TaskAction) => void;
   onToggleFavorite?: (pkg: Package) => void;
+  isSyncing?: boolean;
+  onStartSync?: () => void;
 }
 
 const CATEGORY_META: Record<
@@ -34,7 +38,7 @@ const CATEGORY_META: Record<
 > = {
   Browsers: {
     icon: Globe,
-    description: 'Fast, secure, and privacy-oriented web browsers for modern navigation.',
+    description: 'Web browsers, privacy-focused clients, and rendering engines.',
   },
   Development: {
     icon: Code2,
@@ -62,7 +66,7 @@ const CATEGORY_META: Record<
   },
   Utilities: {
     icon: Wrench,
-    description: 'Windows power tools, NTFS search, screen recorders, and USB imaging.',
+    description: 'Windows power tools, file managers, screen recorders, and imaging.',
   },
   'System Tools': {
     icon: Cpu,
@@ -70,11 +74,15 @@ const CATEGORY_META: Record<
   },
   Compression: {
     icon: Archive,
-    description: 'High-ratio archive managers with 7z, ZIP, TAR, and RAR support.',
+    description: 'Archive managers with 7z, ZIP, TAR, and RAR support.',
   },
   'Drivers and Hardware Utilities': {
     icon: HardDrive,
     description: 'GPU companion software, peripheral configuration, and vendor drivers.',
+  },
+  Uncategorized: {
+    icon: Tag,
+    description: 'Synchronized WinGet packages whose summary records have not yet been enriched with category tags.',
   },
 };
 
@@ -85,6 +93,8 @@ export const CategoriesPage: React.FC<CategoriesPageProps> = ({
   onOpenDetails,
   onActionClick,
   onToggleFavorite,
+  isSyncing = false,
+  onStartSync,
 }) => {
   const [catQuery, setCatQuery] = useState('');
 
@@ -97,7 +107,7 @@ export const CategoriesPage: React.FC<CategoriesPageProps> = ({
         const q = catQuery.toLowerCase().trim();
         return (
           p.name.toLowerCase().includes(q) ||
-          p.publisher.toLowerCase().includes(q) ||
+          (p.publisher || '').toLowerCase().includes(q) ||
           p.id.toLowerCase().includes(q)
         );
       });
@@ -155,7 +165,7 @@ export const CategoriesPage: React.FC<CategoriesPageProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {catPackages.map(pkg => (
               <AppCard
-                key={pkg.id}
+                key={pkg.packageKey || `${pkg.source}::${pkg.id}`}
                 pkg={pkg}
                 onOpenDetails={onOpenDetails}
                 onActionClick={onActionClick}
@@ -167,12 +177,28 @@ export const CategoriesPage: React.FC<CategoriesPageProps> = ({
           <EmptyState
             compact
             icon={<Icon className="w-5 h-5" />}
-            title="No Packages Match Filter"
-            description="No software in this category matched your filter."
+            title={catQuery ? 'No Packages Match Filter' : `No Packages Indexed Under ${selectedCategory}`}
+            description={
+              catQuery
+                ? 'No software in this category matched your filter.'
+                : 'Categories populate automatically as packages are synchronized and enriched from WinGet.'
+            }
             action={
-              <Button size="sm" variant="secondary" onClick={() => setCatQuery('')}>
-                Reset Filter
-              </Button>
+              catQuery ? (
+                <Button size="sm" variant="secondary" onClick={() => setCatQuery('')}>
+                  Reset Filter
+                </Button>
+              ) : onStartSync ? (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  loading={isSyncing}
+                  onClick={onStartSync}
+                  leftIcon={<RefreshCw className="w-3.5 h-3.5" />}
+                >
+                  Sync Catalog
+                </Button>
+              ) : undefined
             }
           />
         )}
@@ -184,7 +210,20 @@ export const CategoriesPage: React.FC<CategoriesPageProps> = ({
     <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-6 animate-page-in">
       <PageHeader
         title="Software Categories"
-        subtitle="Browse curated WinGet packages organized by functional classification."
+        subtitle="Dynamically classified from synchronized WinGet packages and enriched manifest metadata."
+        actions={
+          onStartSync ? (
+            <Button
+              size="sm"
+              variant="secondary"
+              loading={isSyncing}
+              onClick={onStartSync}
+              leftIcon={<RefreshCw className="w-3.5 h-3.5" />}
+            >
+              Sync Catalog
+            </Button>
+          ) : undefined
+        }
       />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">

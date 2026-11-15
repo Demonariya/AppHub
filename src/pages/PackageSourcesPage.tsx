@@ -8,6 +8,8 @@ import {
   RotateCcw,
   ShieldCheck,
   Copy,
+  CheckCircle2,
+  AlertTriangle,
 } from 'lucide-react';
 import { storage } from '../services/storage';
 import { wingetEngine } from '../services/wingetEngine';
@@ -18,6 +20,7 @@ import {
   ErrorState,
   Dialog,
   ConfirmationDialog,
+  EmptyState,
   useToast,
 } from '../components/ui';
 
@@ -25,6 +28,7 @@ interface PackageSourcesPageProps {
   sources: PackageSource[];
   onUpdateSources: (sources: PackageSource[]) => void;
   onRefreshAllSources?: () => Promise<void> | void;
+  onSyncSource?: (sourceName: string) => Promise<void> | void;
   isRefreshing?: boolean;
 }
 
@@ -32,6 +36,7 @@ export const PackageSourcesPage: React.FC<PackageSourcesPageProps> = ({
   sources,
   onUpdateSources,
   onRefreshAllSources,
+  onSyncSource,
   isRefreshing = false,
 }) => {
   const { showToast } = useToast();
@@ -46,14 +51,26 @@ export const PackageSourcesPage: React.FC<PackageSourcesPageProps> = ({
 
   const reloadSourcesFromWinGet = async () => {
     const live = await wingetEngine.getSources();
-    const mapped: PackageSource[] = live.map(s => ({
-      id: s.name.toLowerCase(),
-      name: s.name,
-      arg: s.argument,
-      type: s.name === 'msstore' ? 'msstore' : s.name === 'winget' ? 'winget' : 'custom',
-      isOfficial: s.isOfficial,
-      trustLevel: s.isOfficial ? 'verified' : 'community',
-    }));
+    const existingByName = new Map(sources.map(s => [s.name.toLowerCase(), s]));
+    const mapped: PackageSource[] = live.map(s => {
+      const prev = existingByName.get(s.name.toLowerCase());
+      return {
+        id: s.name.toLowerCase(),
+        name: s.name,
+        arg: s.argument,
+        type: s.name === 'msstore' ? 'msstore' : s.name === 'winget' ? 'winget' : 'custom',
+        sourceType: s.sourceType,
+        isOfficial: s.isOfficial,
+        isEnabled: prev?.isEnabled !== false,
+        lastSyncAt: prev?.lastSyncAt,
+        lastUpdated: prev?.lastUpdated,
+        lastStatus: prev?.lastStatus,
+        lastError: prev?.lastError,
+        packageCount: prev?.packageCount,
+        isComplete: prev?.isComplete,
+        trustLevel: s.isOfficial ? 'verified' : 'community',
+      };
+    });
     storage.saveSources(mapped);
     onUpdateSources(mapped);
   };
@@ -75,6 +92,19 @@ export const PackageSourcesPage: React.FC<PackageSourcesPageProps> = ({
     }
   };
 
+  const handleSyncSingleSource = async (name: string) => {
+    if (!onSyncSource) return;
+    setActionError(null);
+    setBusyAction(`sync:${name.toLowerCase()}`);
+    try {
+      await onSyncSource(name);
+    } catch (err: any) {
+      setActionError(err?.message || String(err));
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
   const handleRemoveSource = async () => {
     if (!sourceToRemove) return;
     const target = sourceToRemove;
@@ -84,6 +114,9 @@ export const PackageSourcesPage: React.FC<PackageSourcesPageProps> = ({
     try {
       await wingetEngine.removeSource(target.name);
       await reloadSourcesFromWinGet();
+      if (onRefreshAllSources) {
+        await onRefreshAllSources();
+      }
       showToast({ title: 'Source Removed', description: target.name, tone: 'info' });
     } catch (err: any) {
       setActionError(err?.message || String(err));
@@ -99,6 +132,9 @@ export const PackageSourcesPage: React.FC<PackageSourcesPageProps> = ({
     try {
       await wingetEngine.resetSources();
       await reloadSourcesFromWinGet();
+      if (onRefreshAllSources) {
+        await onRefreshAllSources();
+      }
       showToast({ title: 'WinGet Sources Reset', tone: 'success' });
     } catch (err: any) {
       setActionError(err?.message || String(err));
@@ -144,6 +180,9 @@ export const PackageSourcesPage: React.FC<PackageSourcesPageProps> = ({
       setSourceUrl('');
       setShowAddModal(false);
       showToast({ title: 'Package Source Added', description: trimmedName, tone: 'success' });
+      if (onSyncSource) {
+        await onSyncSource(trimmedName);
+      }
     } catch (err: any) {
       setValidationError(err?.message || String(err));
     } finally {
@@ -157,7 +196,7 @@ export const PackageSourcesPage: React.FC<PackageSourcesPageProps> = ({
     <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-6 animate-page-in">
       <PageHeader
         title="Package Sources"
-        subtitle="Configure upstream package repositories queried by Microsoft WinGet."
+        subtitle="Configure upstream package repositories queried dynamically during WinGet catalog synchronization."
         actions={
           <>
             <Button
@@ -175,7 +214,7 @@ export const PackageSourcesPage: React.FC<PackageSourcesPageProps> = ({
                 />
               }
             >
-              {busyAction === 'update' ? 'Updating...' : 'Update Sources'}
+              {busyAction === 'update' ? 'Updating...' : 'Update & Sync All'}
             </Button>
 
             <Button
@@ -215,71 +254,123 @@ export const PackageSourcesPage: React.FC<PackageSourcesPageProps> = ({
       <div className="p-4 rounded-[10px] bg-[var(--surface-panel)] border border-[var(--border-subtle)] flex items-start gap-3 text-xs text-[var(--text-secondary)]">
         <ShieldCheck className="w-4 h-4 text-[var(--accent-primary)] shrink-0 mt-0.5" />
         <p className="leading-relaxed">
-          Official sources (<code className="font-mono text-[var(--accent-primary)]">winget</code> and{' '}
-          <code className="font-mono text-[var(--accent-primary)]">msstore</code>) are maintained by Microsoft. Custom repositories execute native{' '}
+          AppHub dynamically queries all enabled repositories reported by{' '}
+          <code className="font-mono text-[var(--accent-primary)]">winget source list</code>. Custom repositories execute native{' '}
           <code className="font-mono text-[var(--text-primary)]">winget source</code> commands and should only be added from trusted organizations.
         </p>
       </div>
 
       {/* Sources List */}
-      <div className="space-y-3">
-        {sources.map(source => {
-          const isRemoving = busyAction === `remove:${source.id}`;
-          return (
-            <div
-              key={source.id}
-              className="p-5 rounded-[12px] bg-[var(--surface-panel)] border border-[var(--border-subtle)] flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-[var(--shadow-card)]"
-            >
-              <div className="flex items-start gap-3.5 min-w-0">
-                <div className="w-10 h-10 rounded-[8px] bg-[var(--surface-subtle)] border border-[var(--border-subtle)] flex items-center justify-center shrink-0">
-                  <Database className="w-5 h-5 text-[var(--accent-primary)]" />
+      {sources.length === 0 ? (
+        <EmptyState
+          icon={<Database className="w-5 h-5" />}
+          title="No WinGet Sources Discovered Yet"
+          description="WinGet sources are detected automatically from the Windows Package Manager runtime."
+        />
+      ) : (
+        <div className="space-y-3">
+          {sources.map(source => {
+            const isRemoving = busyAction === `remove:${source.id}`;
+            const isSyncingSource = busyAction === `sync:${source.name.toLowerCase()}`;
+            return (
+              <div
+                key={source.id}
+                className="p-5 rounded-[12px] bg-[var(--surface-panel)] border border-[var(--border-subtle)] flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-[var(--shadow-card)]"
+              >
+                <div className="flex items-start gap-3.5 min-w-0">
+                  <div className="w-10 h-10 rounded-[8px] bg-[var(--surface-subtle)] border border-[var(--border-subtle)] flex items-center justify-center shrink-0">
+                    <Database className="w-5 h-5 text-[var(--accent-primary)]" />
+                  </div>
+
+                  <div className="min-w-0 space-y-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-semibold text-sm text-[var(--text-primary)]">
+                        {source.name}
+                      </span>
+                      <StatusBadge
+                        status={source.isOfficial ? 'verified' : 'community'}
+                        label={source.isOfficial ? 'Official Microsoft' : 'Custom Source'}
+                        compact
+                      />
+                      {source.lastStatus && (
+                        <span className="inline-flex items-center gap-1 text-[11px] font-mono text-[var(--text-secondary)]">
+                          {source.lastStatus === 'failed' || source.lastStatus === 'agreement_required' ? (
+                            <AlertTriangle className="w-3 h-3 text-[var(--status-warning-fg)]" />
+                          ) : (
+                            <CheckCircle2 className="w-3 h-3 text-[var(--status-success-fg)]" />
+                          )}
+                          <span>
+                            {source.lastStatus}
+                            {source.packageCount !== undefined
+                              ? ` · ${source.packageCount} pkgs`
+                              : ''}
+                          </span>
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="text-xs font-mono text-[var(--text-secondary)] truncate flex items-center gap-2">
+                      <span className="truncate">{source.arg}</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard?.writeText(source.arg);
+                          showToast({ title: 'Endpoint Copied', description: source.arg, tone: 'info' });
+                        }}
+                        aria-label={`Copy endpoint URL for ${source.name}`}
+                        className="text-[var(--text-muted)] hover:text-[var(--accent-primary)] cursor-pointer shrink-0"
+                      >
+                        <Copy className="w-3 h-3" />
+                      </button>
+                    </div>
+
+                    {source.lastSyncAt && (
+                      <div className="text-[11px] font-mono text-[var(--text-muted)]">
+                        Last synced: {new Date(source.lastSyncAt).toLocaleString()}
+                        {source.isComplete === false ? ' (Partial snapshot)' : ''}
+                      </div>
+                    )}
+
+                    {source.lastError && (
+                      <div className="text-[11px] font-mono text-[var(--status-danger-fg)]">
+                        {source.lastError}
+                      </div>
+                    )}
+                  </div>
                 </div>
 
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-semibold text-sm text-[var(--text-primary)]">
-                      {source.name}
-                    </span>
-                    <StatusBadge
-                      status={source.isOfficial ? 'verified' : 'community'}
-                      label={source.isOfficial ? 'Official Microsoft' : 'Custom Source'}
-                      compact
-                    />
-                  </div>
-
-                  <div className="text-xs font-mono text-[var(--text-secondary)] truncate mt-1 flex items-center gap-2">
-                    <span className="truncate">{source.arg}</span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        navigator.clipboard?.writeText(source.arg);
-                        showToast({ title: 'Endpoint Copied', description: source.arg, tone: 'info' });
-                      }}
-                      aria-label={`Copy endpoint URL for ${source.name}`}
-                      className="text-[var(--text-muted)] hover:text-[var(--accent-primary)] cursor-pointer shrink-0"
+                <div className="flex items-center gap-2 shrink-0">
+                  {onSyncSource && (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      loading={isSyncingSource}
+                      disabled={busy}
+                      leftIcon={<RefreshCw className="w-3.5 h-3.5" />}
+                      onClick={() => handleSyncSingleSource(source.name)}
                     >
-                      <Copy className="w-3 h-3" />
-                    </button>
-                  </div>
+                      Sync Source
+                    </Button>
+                  )}
+
+                  {!source.isOfficial && (
+                    <Button
+                      size="sm"
+                      variant="danger"
+                      loading={isRemoving}
+                      disabled={busy}
+                      leftIcon={<Trash2 className="w-3.5 h-3.5" />}
+                      onClick={() => setSourceToRemove(source)}
+                    >
+                      Remove
+                    </Button>
+                  )}
                 </div>
               </div>
-
-              {!source.isOfficial && (
-                <Button
-                  size="sm"
-                  variant="danger"
-                  loading={isRemoving}
-                  disabled={busy}
-                  leftIcon={<Trash2 className="w-3.5 h-3.5" />}
-                  onClick={() => setSourceToRemove(source)}
-                >
-                  Remove
-                </Button>
-              )}
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Add Source Dialog */}
       <Dialog

@@ -1,8 +1,19 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
-import { Package, TaskAction, Architecture, CategoryType } from '../types';
+import {
+  Package,
+  PackageSource,
+  TaskAction,
+  Architecture,
+  CategoryType,
+  CatalogCacheStats,
+  CatalogSyncProgress,
+  CatalogSyncResult,
+  CatalogSyncRunRecord,
+} from '../types';
 import { AppCard } from '../components/common/AppCard';
 import { AppListItem } from '../components/common/AppListItem';
-import { CATEGORIES_LIST } from '../services/catalog';
+import { CatalogSyncBanner } from '../components/common/CatalogSyncBanner';
+import { CATEGORIES_LIST, getPackageKey } from '../services/catalog';
 import { wingetEngine } from '../services/wingetEngine';
 import { storage } from '../services/storage';
 import { isTauriEnvironment } from '../services/tauriBridge';
@@ -14,6 +25,7 @@ import {
   Search,
   History,
   Trash2,
+  RefreshCw,
 } from 'lucide-react';
 import {
   PageHeader,
@@ -27,18 +39,38 @@ import {
 
 interface DiscoverPageProps {
   packages: Package[];
+  sources: PackageSource[];
   onOpenDetails: (pkg: Package) => void;
   onActionClick: (pkg: Package, action: TaskAction) => void;
   onToggleFavorite?: (pkg: Package) => void;
+  onPackageEnriched?: (pkgId: string, source: string, details: Partial<Package>) => void;
   initialCategory?: CategoryType | null;
+  isSyncing: boolean;
+  syncProgress: CatalogSyncProgress | null;
+  lastSyncResult: CatalogSyncResult | null;
+  syncHistory: CatalogSyncRunRecord[];
+  catalogStats: CatalogCacheStats;
+  onStartSync: (targetSources?: string[]) => void;
+  onCancelSync: () => void;
+  onAcceptAgreementsAndSync: () => void;
 }
 
 export const DiscoverPage: React.FC<DiscoverPageProps> = ({
   packages,
+  sources,
   onOpenDetails,
   onActionClick,
   onToggleFavorite,
+  onPackageEnriched,
   initialCategory = null,
+  isSyncing,
+  syncProgress,
+  lastSyncResult,
+  syncHistory,
+  catalogStats,
+  onStartSync,
+  onCancelSync,
+  onAcceptAgreementsAndSync,
 }) => {
   const [query, setQuery] = useState('');
   const [recentSearches, setRecentSearches] = useState<string[]>(() =>
@@ -48,7 +80,7 @@ export const DiscoverPage: React.FC<DiscoverPageProps> = ({
   const [selectedSource, setSelectedSource] = useState<string>('all');
   const [selectedArch, setSelectedArch] = useState<string>('all');
   const [selectedStatus, setSelectedStatus] = useState<string>('all');
-  const [sortBy, setSortBy] = useState<'relevance' | 'name' | 'releaseDate'>('relevance');
+  const [sortBy, setSortBy] = useState<'relevance' | 'name' | 'releaseDate' | 'size'>('relevance');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 12;
@@ -112,18 +144,18 @@ export const DiscoverPage: React.FC<DiscoverPageProps> = ({
   const mergedCatalog = useMemo(() => {
     if (!remoteResults) return packages;
 
-    const localById = new Map<string, Package>();
+    const localByKey = new Map<string, Package>();
     for (const p of packages) {
-      localById.set(p.id.toLowerCase(), p);
+      localByKey.set(getPackageKey(p.id, p.source), p);
     }
 
     const combined: Package[] = [];
     const seen = new Set<string>();
 
     for (const remote of remoteResults) {
-      const key = remote.id.toLowerCase();
+      const key = getPackageKey(remote.id, remote.source);
       seen.add(key);
-      const local = localById.get(key);
+      const local = localByKey.get(key);
       if (local) {
         combined.push({
           ...local,
@@ -137,14 +169,14 @@ export const DiscoverPage: React.FC<DiscoverPageProps> = ({
 
     const q = query.toLowerCase().trim();
     for (const local of packages) {
-      const key = local.id.toLowerCase();
+      const key = getPackageKey(local.id, local.source);
       if (seen.has(key)) continue;
       if (
         local.name.toLowerCase().includes(q) ||
         local.id.toLowerCase().includes(q) ||
-        local.publisher.toLowerCase().includes(q) ||
+        (local.publisher || '').toLowerCase().includes(q) ||
         local.tags.some(t => t.toLowerCase().includes(q)) ||
-        local.description.toLowerCase().includes(q)
+        (local.description || '').toLowerCase().includes(q)
       ) {
         combined.push(local);
         seen.add(key);
@@ -163,9 +195,9 @@ export const DiscoverPage: React.FC<DiscoverPageProps> = ({
         p =>
           p.name.toLowerCase().includes(q) ||
           p.id.toLowerCase().includes(q) ||
-          p.publisher.toLowerCase().includes(q) ||
+          (p.publisher || '').toLowerCase().includes(q) ||
           p.tags.some(t => t.toLowerCase().includes(q)) ||
-          p.description.toLowerCase().includes(q)
+          (p.description || '').toLowerCase().includes(q)
       );
     }
 
@@ -174,7 +206,7 @@ export const DiscoverPage: React.FC<DiscoverPageProps> = ({
     }
 
     if (selectedSource !== 'all') {
-      result = result.filter(p => p.source === selectedSource);
+      result = result.filter(p => p.source.toLowerCase() === selectedSource.toLowerCase());
     }
 
     if (selectedArch !== 'all') {
@@ -195,6 +227,12 @@ export const DiscoverPage: React.FC<DiscoverPageProps> = ({
       result.sort((a, b) => a.name.localeCompare(b.name));
     } else if (sortBy === 'releaseDate') {
       result.sort((a, b) => (b.releaseDate || '').localeCompare(a.releaseDate || ''));
+    } else if (sortBy === 'size') {
+      result.sort(
+        (a, b) =>
+          (b.downloadSizeBytes || b.sizeBytes || b.installedSizeBytes || 0) -
+          (a.downloadSizeBytes || a.sizeBytes || a.installedSizeBytes || 0)
+      );
     }
 
     return result;
@@ -210,7 +248,52 @@ export const DiscoverPage: React.FC<DiscoverPageProps> = ({
   ]);
 
   const totalPages = Math.ceil(filtered.length / itemsPerPage) || 1;
-  const paginated = filtered.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
+  const paginated = useMemo(
+    () => filtered.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage),
+    [filtered, currentPage]
+  );
+
+  // Lazy bounded-concurrency `winget show` enrichment for currently visible summary cards
+  useEffect(() => {
+    if (!isTauriEnvironment() || isSyncing || paginated.length === 0) return;
+    let cancelled = false;
+
+    for (const pkg of paginated) {
+      if (pkg.isExternal || pkg.metadataStatus === 'enriched') continue;
+      if (!wingetEngine.isValidPackageId(pkg.id)) continue;
+
+      void wingetEngine.metadataQueue.enqueue(pkg, {
+        onEnriched: (_pkgKey, details) => {
+          if (cancelled) return;
+          storage.updatePackage(pkg.id, details, pkg.source);
+          onPackageEnriched?.(pkg.id, pkg.source, details);
+        },
+      });
+    }
+
+    return () => {
+      cancelled = true;
+      wingetEngine.metadataQueue.cancelAll();
+    };
+  }, [paginated, isSyncing, onPackageEnriched]);
+
+  const dynamicSourceOptions = useMemo(() => {
+    const names = new Set<string>();
+    for (const s of sources) {
+      if (s.name) names.add(s.name);
+    }
+    for (const p of packages) {
+      if (p.source && p.source !== 'external') names.add(p.source);
+    }
+    const opts = [{ value: 'all', label: 'All Sources' }];
+    for (const name of Array.from(names).sort((a, b) => a.localeCompare(b))) {
+      opts.push({ value: name, label: name });
+    }
+    if (packages.some(p => p.source === 'external' || p.isExternal)) {
+      opts.push({ value: 'external', label: 'External' });
+    }
+    return opts;
+  }, [sources, packages]);
 
   const handleResetFilters = () => {
     setQuery('');
@@ -233,11 +316,13 @@ export const DiscoverPage: React.FC<DiscoverPageProps> = ({
       sortBy !== 'relevance'
   );
 
+  const isDesktop = isTauriEnvironment();
+
   return (
     <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-6 animate-page-in">
       <PageHeader
         title="Explore Packages"
-        subtitle="Browse curated WinGet packages or query the official Windows Package Manager repository."
+        subtitle="Browse synchronized WinGet packages from your configured Windows sources or query live."
         actions={
           <div className="flex items-center bg-[var(--surface-subtle)] border border-[var(--border-subtle)] rounded-[8px] p-0.5">
             <button
@@ -270,6 +355,20 @@ export const DiscoverPage: React.FC<DiscoverPageProps> = ({
         }
       />
 
+      {isDesktop && (
+        <CatalogSyncBanner
+          compact
+          isSyncing={isSyncing}
+          syncProgress={syncProgress}
+          lastSyncResult={lastSyncResult}
+          syncHistory={syncHistory}
+          catalogStats={catalogStats}
+          onStartSync={onStartSync}
+          onCancelSync={onCancelSync}
+          onAcceptAgreementsAndSync={onAcceptAgreementsAndSync}
+        />
+      )}
+
       {/* Search & Filter Toolbar */}
       <div className="space-y-3">
         <div className="flex flex-col md:flex-row items-stretch md:items-center gap-3">
@@ -281,9 +380,9 @@ export const DiscoverPage: React.FC<DiscoverPageProps> = ({
             }}
             loading={isSearching}
             placeholder={
-              isTauriEnvironment()
-                ? 'Search catalog or query live WinGet repository (min 2 chars)...'
-                : 'Search by application name, package ID, publisher, or tag...'
+              isDesktop
+                ? 'Filter synchronized catalog or query live WinGet repository (min 2 chars)...'
+                : 'Search synchronized packages by name, ID, publisher, or tag...'
             }
             className="flex-1"
           />
@@ -292,11 +391,12 @@ export const DiscoverPage: React.FC<DiscoverPageProps> = ({
             <FilterSelect
               label="Sort"
               value={sortBy}
-              onChange={v => setSortBy(v as 'relevance' | 'name' | 'releaseDate')}
+              onChange={v => setSortBy(v as 'relevance' | 'name' | 'releaseDate' | 'size')}
               options={[
                 { value: 'relevance', label: 'Relevance' },
                 { value: 'name', label: 'Name (A–Z)' },
                 { value: 'releaseDate', label: 'Release Date' },
+                { value: 'size', label: 'Size (Largest)' },
               ]}
             />
           </div>
@@ -359,12 +459,7 @@ export const DiscoverPage: React.FC<DiscoverPageProps> = ({
               setSelectedSource(v);
               setCurrentPage(1);
             }}
-            options={[
-              { value: 'all', label: 'All Sources' },
-              { value: 'winget', label: 'winget' },
-              { value: 'msstore', label: 'msstore' },
-              { value: 'external', label: 'External' },
-            ]}
+            options={dynamicSourceOptions}
           />
 
           <FilterSelect
@@ -427,14 +522,14 @@ export const DiscoverPage: React.FC<DiscoverPageProps> = ({
       </div>
 
       {/* Results Area */}
-      {isSearching && paginated.length === 0 ? (
+      {(isSearching || isSyncing) && paginated.length === 0 ? (
         <SkeletonGrid count={8} />
       ) : paginated.length > 0 ? (
         viewMode === 'grid' ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             {paginated.map(pkg => (
               <AppCard
-                key={pkg.id}
+                key={pkg.packageKey || `${pkg.source}::${pkg.id}`}
                 pkg={pkg}
                 onOpenDetails={onOpenDetails}
                 onActionClick={onActionClick}
@@ -446,7 +541,7 @@ export const DiscoverPage: React.FC<DiscoverPageProps> = ({
           <div className="rounded-[12px] border border-[var(--border-subtle)] overflow-hidden divide-y divide-[var(--border-subtle)]">
             {paginated.map(pkg => (
               <AppListItem
-                key={pkg.id}
+                key={pkg.packageKey || `${pkg.source}::${pkg.id}`}
                 pkg={pkg}
                 onOpenDetails={onOpenDetails}
                 onActionClick={onActionClick}
@@ -455,6 +550,32 @@ export const DiscoverPage: React.FC<DiscoverPageProps> = ({
             ))}
           </div>
         )
+      ) : packages.length === 0 && !hasActiveFilters ? (
+        <EmptyState
+          icon={<RefreshCw className="w-5 h-5" />}
+          title={
+            isDesktop
+              ? 'No WinGet Packages Synchronized Yet'
+              : 'WinGet Catalog Requires Windows Desktop Runtime'
+          }
+          description={
+            isDesktop
+              ? 'Run a catalog synchronization to fetch available applications from your configured WinGet sources into the local database.'
+              : 'AppHub does not bundle a static application catalog. Launch the Windows desktop app to synchronize packages directly from Microsoft WinGet.'
+          }
+          action={
+            isDesktop ? (
+              <Button
+                size="md"
+                variant="primary"
+                leftIcon={<RefreshCw className="w-4 h-4" />}
+                onClick={() => onStartSync()}
+              >
+                Synchronize WinGet Catalog
+              </Button>
+            ) : undefined
+          }
+        />
       ) : (
         <EmptyState
           icon={<Search className="w-5 h-5" />}

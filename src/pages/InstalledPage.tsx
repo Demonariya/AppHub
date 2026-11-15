@@ -3,6 +3,7 @@ import { Package, TaskAction } from '../types';
 import { AppListItem } from '../components/common/AppListItem';
 import { AppCard } from '../components/common/AppCard';
 import { LayoutGrid, List, HardDrive, Share2, RefreshCw } from 'lucide-react';
+import { formatBytes } from '../services/catalog';
 import {
   PageHeader,
   SearchInput,
@@ -33,7 +34,7 @@ export const InstalledPage: React.FC<InstalledPageProps> = ({
 }) => {
   const [query, setQuery] = useState('');
   const [sourceFilter, setSourceFilter] = useState<'all' | 'winget' | 'external'>('all');
-  const [sortBy, setSortBy] = useState<'name' | 'source' | 'updates'>('name');
+  const [sortBy, setSortBy] = useState<'name' | 'source' | 'updates' | 'size'>('name');
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
 
   const installedPackages = useMemo(() => packages.filter(p => p.isInstalled), [packages]);
@@ -42,6 +43,17 @@ export const InstalledPage: React.FC<InstalledPageProps> = ({
   const pendingUpdatesCount = installedPackages.filter(
     p => !p.isExternal && p.installedVersion && p.installedVersion !== p.latestVersion
   ).length;
+  const knownFootprint = useMemo(() => {
+    let total = 0;
+    let count = 0;
+    for (const p of installedPackages) {
+      if (p.installedSizeBytes && p.installedSizeBytes > 0) {
+        total += p.installedSizeBytes;
+        count += 1;
+      }
+    }
+    return { total, count };
+  }, [installedPackages]);
 
   const filtered = useMemo(() => {
     let list = installedPackages.filter(p => {
@@ -52,11 +64,16 @@ export const InstalledPage: React.FC<InstalledPageProps> = ({
       return (
         p.name.toLowerCase().includes(q) ||
         p.id.toLowerCase().includes(q) ||
-        p.publisher.toLowerCase().includes(q)
+        (p.publisher || '').toLowerCase().includes(q)
       );
     });
 
     list = [...list].sort((a, b) => {
+      if (sortBy === 'size') {
+        const aSize = a.installedSizeBytes || a.downloadSizeBytes || a.sizeBytes || 0;
+        const bSize = b.installedSizeBytes || b.downloadSizeBytes || b.sizeBytes || 0;
+        if (aSize !== bSize) return bSize - aSize;
+      }
       if (sortBy === 'updates') {
         const aUpd = a.installedVersion && a.installedVersion !== a.latestVersion ? 0 : 1;
         const bUpd = b.installedVersion && b.installedVersion !== b.latestVersion ? 0 : 1;
@@ -116,6 +133,11 @@ export const InstalledPage: React.FC<InstalledPageProps> = ({
           <div className="text-lg sm:text-xl font-bold font-mono text-[var(--text-primary)] tabular-nums">
             {installedPackages.length} apps
           </div>
+          {knownFootprint.total > 0 && (
+            <div className="text-[11px] font-mono text-[var(--text-muted)] tabular-nums">
+              {formatBytes(knownFootprint.total)} across {knownFootprint.count} sized
+            </div>
+          )}
         </div>
 
         <div className="p-4 rounded-[12px] bg-[var(--surface-panel)] border border-[var(--border-subtle)] space-y-1">
@@ -166,9 +188,10 @@ export const InstalledPage: React.FC<InstalledPageProps> = ({
           <FilterSelect
             label="Sort"
             value={sortBy}
-            onChange={v => setSortBy(v as 'name' | 'source' | 'updates')}
+            onChange={v => setSortBy(v as 'name' | 'source' | 'updates' | 'size')}
             options={[
               { value: 'name', label: 'Name (A–Z)' },
+              { value: 'size', label: 'Size (Largest)' },
               { value: 'updates', label: 'Updates First' },
               { value: 'source', label: 'Source' },
             ]}
@@ -213,15 +236,16 @@ export const InstalledPage: React.FC<InstalledPageProps> = ({
               <span className="flex-1">Application Name &amp; ID</span>
               <div className="flex items-center gap-6 shrink-0 font-mono">
                 <span className="w-24">Source</span>
-                <span className="w-28 text-right">Installed</span>
-                <span className="w-28 text-right">Latest</span>
+                <span className="w-20 text-right">Size</span>
+                <span className="w-24 text-right">Installed</span>
+                <span className="w-24 text-right">Latest</span>
               </div>
               <span className="w-36 text-right">Actions</span>
             </div>
 
             {filtered.map(pkg => (
               <AppListItem
-                key={pkg.id}
+                key={pkg.packageKey || `${pkg.source}::${pkg.id}`}
                 pkg={pkg}
                 onOpenDetails={onOpenDetails}
                 onActionClick={onActionClick}
@@ -233,7 +257,7 @@ export const InstalledPage: React.FC<InstalledPageProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             {filtered.map(pkg => (
               <AppCard
-                key={pkg.id}
+                key={pkg.packageKey || `${pkg.source}::${pkg.id}`}
                 pkg={pkg}
                 onOpenDetails={onOpenDetails}
                 onActionClick={onActionClick}

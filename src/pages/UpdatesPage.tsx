@@ -192,7 +192,7 @@ export const UpdatesPage: React.FC<UpdatesPageProps> = ({
 
               return (
                 <div
-                  key={pkg.id}
+                  key={pkg.packageKey || `${pkg.source}::${pkg.id}`}
                   onClick={() => onOpenDetails(pkg)}
                   className="p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 hover:bg-[var(--surface-hover)]/65 transition-colors cursor-pointer"
                 >
@@ -337,8 +337,8 @@ export const UpdatesPage: React.FC<UpdatesPageProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {pinnedList.map(pkg => (
               <div
-                key={pkg.id}
-                className="p-3.5 rounded-[10px] bg-[var(--surface-panel)] border border-[var(--border-subtle)] flex items-center justify-between gap-3"
+                key={pkg.packageKey || `${pkg.source}::${pkg.id}`}
+                className="p-4 rounded-[10px] bg-[var(--surface-panel)] border border-[var(--border-subtle)] flex items-center justify-between gap-3"
               >
                 <div className="min-w-0">
                   <div className="text-xs font-semibold text-[var(--text-primary)] truncate">

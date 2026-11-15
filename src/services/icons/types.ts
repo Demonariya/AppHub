@@ -12,6 +12,7 @@ export interface IconRecord {
   sourceType: IconSourceType;
   verified: boolean;
   url?: string;
+  fallbackUrl?: string;
   svgDataUri?: string;
   sourceUrl?: string;
   category?: string;
@@ -20,17 +21,23 @@ export interface IconRecord {
 
 export interface ResolvedIcon {
   packageId: string;
+  source?: string;
   src: string;
   isSvg: boolean;
   sourceType: IconSourceType;
   fallbackSrc?: string;
   verified: boolean;
+  width?: number;
+  height?: number;
+  mimeType?: string;
+  sha256?: string;
   altText: string;
   diagnostic: IconDiagnosticInfo;
 }
 
 export interface IconDiagnosticInfo {
   packageId: string;
+  source?: string;
   sourceType: IconSourceType;
   primaryUrl: string;
   fallbackUrl?: string;

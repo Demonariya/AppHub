@@ -195,6 +195,35 @@ export const SYSINTERNALS_SVG = toSvgDataUri(`
 </svg>
 `);
 
+/**
+ * voidtools Everything Search Utility Logo
+ */
+export const EVERYTHING_SEARCH_SVG = toSvgDataUri(`
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100%" height="100%">
+  <defs>
+    <linearGradient id="everything-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FF9800" />
+      <stop offset="100%" stop-color="#E65100" />
+    </linearGradient>
+  </defs>
+  <rect width="100" height="100" rx="22" fill="#1E2128" />
+  <circle cx="44" cy="44" r="22" fill="none" stroke="url(#everything-grad)" stroke-width="8" />
+  <circle cx="44" cy="44" r="11" fill="url(#everything-grad)" opacity="0.22" />
+  <line x1="60" y1="60" x2="78" y2="78" stroke="url(#everything-grad)" stroke-width="10" stroke-linecap="round" />
+</svg>
+`);
+
+/**
+ * ripgrep CLI Search Tool Emblem
+ */
+export const RIPGREP_SVG = toSvgDataUri(`
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100%" height="100%">
+  <rect width="100" height="100" rx="22" fill="#171B22" />
+  <rect x="16" y="20" width="68" height="60" rx="10" fill="#212631" stroke="#3B82F6" stroke-width="2.5" />
+  <text x="50" y="59" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="30" font-weight="700" fill="#60A5FA">rg</text>
+</svg>
+`);
+
 export const LOCAL_OFFICIAL_ASSETS: Record<string, string> = {
   'Microsoft.VisualStudioCode': VSCODE_STABLE_BLUE_SVG,
   'TheBrowserCompany.Arc': ARC_BROWSER_SVG,
@@ -204,4 +233,6 @@ export const LOCAL_OFFICIAL_ASSETS: Record<string, string> = {
   'GOG.Galaxy': GOG_GALAXY_SVG,
   'OBSProject.OBSStudio': OBS_STUDIO_SVG,
   'MarkRussinovich.SysinternalsSuite': SYSINTERNALS_SVG,
+  'voidtools.Everything': EVERYTHING_SEARCH_SVG,
+  'BurntSushi.ripgrep.MSVC': RIPGREP_SVG,
 };

@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { wingetEngine } from '../../services/wingetEngine';
 import { storage } from '../../services/storage';
+import { formatBytes } from '../../services/catalog';
 import { isTauriEnvironment } from '../../services/tauriBridge';
 import { AppIconImage } from '../common/AppIconImage';
 import { getIconDiagnostics } from '../../services/icons';
@@ -38,6 +39,7 @@ interface AppDetailsModalProps {
   onClose: () => void;
   onActionClick: (pkg: Package, action: TaskAction, options?: any) => void;
   onToggleFavorite?: (pkg: Package) => void;
+  onPackageEnriched?: (pkgId: string, source: string, details: Partial<Package>) => void;
   isActionActive?: boolean;
 }
 
@@ -46,6 +48,7 @@ export const AppDetailsModal: React.FC<AppDetailsModalProps> = ({
   onClose,
   onActionClick,
   onToggleFavorite,
+  onPackageEnriched,
   isActionActive = false,
 }) => {
   const { showToast } = useToast();
@@ -58,6 +61,7 @@ export const AppDetailsModal: React.FC<AppDetailsModalProps> = ({
 
   const [liveMetadata, setLiveMetadata] = useState<Partial<Package> | null>(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
+  const [probingSize, setProbingSize] = useState(false);
 
   const [versions, setVersions] = useState<PackageVersionInfo[]>([]);
   const [loadingVersions, setLoadingVersions] = useState(false);
@@ -69,11 +73,13 @@ export const AppDetailsModal: React.FC<AppDetailsModalProps> = ({
       setVersions([]);
       setRollbackTarget(null);
       setLiveMetadata(null);
+      setProbingSize(false);
       return;
     }
 
     let cancelled = false;
     setActiveTab('overview');
+    storage.recordRecentlyViewed(pkg.id);
     const settings = storage.getSettings();
     setSilentMode(settings.silentInstall);
 
@@ -86,13 +92,40 @@ export const AppDetailsModal: React.FC<AppDetailsModalProps> = ({
     }
 
     setLiveMetadata(null);
+    setProbingSize(false);
     if (isTauriEnvironment() && !pkg.isExternal && wingetEngine.isValidPackageId(pkg.id)) {
       setLoadingDetails(true);
       wingetEngine
-        .showPackageDetails(pkg.id)
+        .showPackageDetails(pkg.id, pkg.source)
         .then(details => {
-          if (!cancelled && details) {
-            setLiveMetadata(details);
+          if (cancelled || !details) return;
+          setLiveMetadata(details);
+          storage.updatePackage(pkg.id, details, pkg.source);
+          onPackageEnriched?.(pkg.id, pkg.source, details);
+          if (!details.downloadSizeBytes && details.installerUrl) {
+            setProbingSize(true);
+            wingetEngine
+              .probeInstallerSize(details.installerUrl)
+              .then(bytes => {
+                if (cancelled || !bytes) return;
+                const formatted = formatBytes(bytes);
+                const sizePatch: Partial<Package> = {
+                  downloadSizeBytes: bytes,
+                  sizeBytes: bytes,
+                  formattedDownloadSize: formatted,
+                  formattedSize: formatted,
+                };
+                setLiveMetadata(prev => ({
+                  ...(prev || details),
+                  ...sizePatch,
+                }));
+                storage.updatePackage(pkg.id, sizePatch, pkg.source);
+                onPackageEnriched?.(pkg.id, pkg.source, sizePatch);
+              })
+              .catch(() => {})
+              .finally(() => {
+                if (!cancelled) setProbingSize(false);
+              });
           }
         })
         .catch(() => {})
@@ -117,7 +150,7 @@ export const AppDetailsModal: React.FC<AppDetailsModalProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [pkg?.id, pkg?.installedVersion]);
+  }, [pkg?.id, pkg?.source, pkg?.installedVersion]);
 
   if (!pkg) return null;
 
@@ -132,12 +165,22 @@ export const AppDetailsModal: React.FC<AppDetailsModalProps> = ({
         description: liveMetadata.description || pkg.description,
         longDescription: liveMetadata.longDescription || pkg.longDescription,
         tags: liveMetadata.tags || pkg.tags,
+        downloadSizeBytes: liveMetadata.downloadSizeBytes ?? pkg.downloadSizeBytes,
+        sizeBytes: liveMetadata.sizeBytes ?? pkg.sizeBytes,
+        formattedDownloadSize: liveMetadata.formattedDownloadSize || pkg.formattedDownloadSize,
+        formattedSize: liveMetadata.formattedSize || pkg.formattedSize,
+        installedSizeBytes: liveMetadata.installedSizeBytes ?? pkg.installedSizeBytes,
+        formattedInstalledSize: liveMetadata.formattedInstalledSize || pkg.formattedInstalledSize,
       }
     : pkg;
 
+  const heroSizeLabel = displayPkg.isInstalled
+    ? displayPkg.formattedInstalledSize || displayPkg.formattedDownloadSize || displayPkg.formattedSize
+    : displayPkg.formattedDownloadSize || displayPkg.formattedSize;
+
   const effectiveCustomLocation =
     enableCustomLocation && customLocationPath.trim() ? customLocationPath.trim() : undefined;
-  const iconDiag = getIconDiagnostics(displayPkg.id);
+  const iconDiag = getIconDiagnostics(displayPkg.id, displayPkg.source);
   const hasUpdate = Boolean(
     displayPkg.isInstalled &&
       displayPkg.installedVersion &&
@@ -272,7 +315,7 @@ export const AppDetailsModal: React.FC<AppDetailsModalProps> = ({
 
                 <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--text-secondary)]">
                   <span className="font-medium text-[var(--text-primary)]">
-                    {displayPkg.publisher}
+                    {displayPkg.publisher || 'Publisher not reported in summary'}
                   </span>
                   <span className="text-[var(--text-muted)]">·</span>
                   <button
@@ -290,6 +333,14 @@ export const AppDetailsModal: React.FC<AppDetailsModalProps> = ({
                   </button>
                   <span className="text-[var(--text-muted)]">·</span>
                   <span>{displayPkg.category}</span>
+                  {heroSizeLabel && (
+                    <>
+                      <span className="text-[var(--text-muted)]">·</span>
+                      <span className="font-mono tabular-nums text-[var(--text-primary)]">
+                        {heroSizeLabel}
+                      </span>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
@@ -454,7 +505,7 @@ export const AppDetailsModal: React.FC<AppDetailsModalProps> = ({
                           {copiedCli ? 'Copied' : 'Copy Command'}
                         </Button>
                       </div>
-                      <div className="font-mono text-xs text-[var(--text-primary)] bg-[var(--surface-input)] p-3 rounded-[8px] border border-[var(--border-subtle)] break-all select-all">
+                      <div className="font-mono text-xs text-[var(--text-primary)] bg-[var(--surface-input)] p-3 rounded-[8px] border border-[var(--border-subtle)] break-words select-all">
                         {installCli}
                       </div>
                     </div>
@@ -551,7 +602,25 @@ export const AppDetailsModal: React.FC<AppDetailsModalProps> = ({
                   <div className="py-2 flex items-center justify-between gap-3">
                     <dt className="text-[var(--text-secondary)]">Architectures</dt>
                     <dd className="font-mono uppercase text-[var(--text-primary)]">
-                      {displayPkg.architectures.join(', ')}
+                      {displayPkg.architectures.length > 0
+                        ? displayPkg.architectures.join(', ')
+                        : 'Not specified'}
+                    </dd>
+                  </div>
+
+                  <div className="py-2 flex items-center justify-between gap-3">
+                    <dt className="text-[var(--text-secondary)]">Download Size</dt>
+                    <dd className="font-mono text-[var(--text-primary)] tabular-nums">
+                      {displayPkg.formattedDownloadSize ||
+                        displayPkg.formattedSize ||
+                        (probingSize ? 'Checking...' : 'Not reported')}
+                    </dd>
+                  </div>
+
+                  <div className="py-2 flex items-center justify-between gap-3">
+                    <dt className="text-[var(--text-secondary)]">Installed Size</dt>
+                    <dd className="font-mono text-[var(--text-primary)] tabular-nums">
+                      {displayPkg.formattedInstalledSize || 'Not reported'}
                     </dd>
                   </div>
 

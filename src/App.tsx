@@ -8,12 +8,17 @@ import {
   InstallationTask,
   CategoryType,
   WinGetEnvironment,
+  CatalogCacheStats,
+  CatalogSyncProgress,
+  CatalogSyncResult,
+  CatalogSyncRunRecord,
 } from './types';
 import { storage } from './services/storage';
+import { getPackageKey, isCatalogCacheStale } from './services/catalog';
 import { installationQueue } from './services/installationQueue';
 import { wingetEngine } from './services/wingetEngine';
 import { isTauriEnvironment } from './services/tauriBridge';
-import { invalidateIconCache } from './services/icons';
+import { clearPersistentIconCache } from './services/icons';
 import { TitleBar } from './components/layout/TitleBar';
 import { Sidebar, PageId } from './components/layout/Sidebar';
 import { TopHeader } from './components/layout/TopHeader';
@@ -52,8 +57,19 @@ function AppShellContent() {
     storage.getHistoryTasks()
   );
 
+  // Catalog Synchronization State
+  const [isCatalogSyncing, setIsCatalogSyncing] = useState(false);
+  const [catalogSyncProgress, setCatalogSyncProgress] = useState<CatalogSyncProgress | null>(null);
+  const [lastCatalogSyncResult, setLastCatalogSyncResult] = useState<CatalogSyncResult | null>(null);
+  const [catalogStats, setCatalogStats] = useState<CatalogCacheStats>(() =>
+    storage.getCatalogCacheStats()
+  );
+  const [syncHistory, setSyncHistory] = useState<CatalogSyncRunRecord[]>(() =>
+    storage.getCatalogSyncHistory()
+  );
+
   // Modals & Drawers
-  const [detailedPackageId, setDetailedPackageId] = useState<string | null>(null);
+  const [detailedPackageKey, setDetailedPackageKey] = useState<string | null>(null);
   const [uacPackage, setUacPackage] = useState<{
     pkg: Package;
     action: TaskAction;
@@ -78,9 +94,27 @@ function AppShellContent() {
   const [syncError, setSyncError] = useState<string | null>(null);
   const [pinError, setPinError] = useState<string | null>(null);
 
-  const detailedPackage = detailedPackageId
-    ? packages.find(p => p.id === detailedPackageId) || null
+  const hasAutoSyncedRef = useRef(false);
+  const catalogSyncInFlightRef = useRef(false);
+
+  const detailedPackage = detailedPackageKey
+    ? packages.find(p => (p.packageKey || getPackageKey(p.id, p.source)) === detailedPackageKey) ||
+      packages.find(p => p.id === detailedPackageKey) ||
+      null
     : null;
+
+  const openPackageDetails = useCallback((pkg: Package) => {
+    setDetailedPackageKey(pkg.packageKey || getPackageKey(pkg.id, pkg.source));
+  }, []);
+
+  useEffect(() => {
+    if (typeof document !== 'undefined') {
+      document.documentElement.style.setProperty(
+        '--sidebar-width',
+        isSidebarCompact ? '64px' : '224px'
+      );
+    }
+  }, [isSidebarCompact]);
 
   const handleToggleSidebarCompact = () => {
     setIsSidebarCompact(prev => {
@@ -105,7 +139,7 @@ function AppShellContent() {
         if (!isTauriEnvironment() || !env.isInstalled) {
           setPackages(storage.getPackages());
           setIsSyncing(false);
-          return;
+          return { env, discoveredSourceNames: [] as string[] };
         }
 
         const [installedRes, upgradesRes, sourcesRes] = await Promise.allSettled([
@@ -134,23 +168,135 @@ function AppShellContent() {
           setPackages(merged);
         }
 
+        let discoveredSourceNames: string[] = [];
         if (sourcesRes.status === 'fulfilled' && sourcesRes.value) {
-          const mappedSources: PackageSource[] = sourcesRes.value.map(s => ({
-            id: s.name.toLowerCase(),
-            name: s.name,
-            arg: s.argument,
-            type: s.name === 'msstore' ? 'msstore' : s.name === 'winget' ? 'winget' : 'custom',
-            isOfficial: s.isOfficial,
-            trustLevel: s.isOfficial ? 'verified' : 'community',
-          }));
+          discoveredSourceNames = sourcesRes.value.map(s => s.name);
+          const existingByName = new Map(storage.getSources().map(s => [s.name.toLowerCase(), s]));
+          const mappedSources: PackageSource[] = sourcesRes.value.map(s => {
+            const prev = existingByName.get(s.name.toLowerCase());
+            return {
+              id: s.name.toLowerCase(),
+              name: s.name,
+              arg: s.argument,
+              type: s.name === 'msstore' ? 'msstore' : s.name === 'winget' ? 'winget' : 'custom',
+              sourceType: s.sourceType,
+              isOfficial: s.isOfficial,
+              isEnabled: prev?.isEnabled !== false,
+              lastSyncAt: prev?.lastSyncAt,
+              lastUpdated: prev?.lastUpdated,
+              lastStatus: prev?.lastStatus,
+              lastError: prev?.lastError,
+              packageCount: prev?.packageCount,
+              isComplete: prev?.isComplete,
+              trustLevel: s.isOfficial ? 'verified' : 'community',
+            };
+          });
           storage.saveSources(mappedSources);
           setSources(mappedSources);
         }
+
+        return { env, discoveredSourceNames };
       } catch (err: any) {
         setSyncError(err?.message || String(err));
+        return { env: wingetEngine.getEnvironment(), discoveredSourceNames: [] as string[] };
       } finally {
         setIsSyncing(false);
       }
+    },
+    []
+  );
+
+  const handleStartCatalogSync = useCallback(
+    async (targetSources?: string[], overrideAcceptAgreements?: boolean) => {
+      if (!isTauriEnvironment()) return;
+      if (catalogSyncInFlightRef.current) return;
+
+      catalogSyncInFlightRef.current = true;
+      setIsCatalogSyncing(true);
+      setCatalogSyncProgress({
+        runId: 'pending',
+        phase: 'discovering-sources',
+        sourcesCompleted: 0,
+        sourcesTotal: targetSources?.length || 1,
+        packagesDiscovered: 0,
+        message: 'Discovering configured WinGet sources...',
+        isIndeterminate: true,
+      });
+
+      try {
+        const result = await wingetEngine.syncCatalog({
+          targetSources,
+          acceptSourceAgreements: overrideAcceptAgreements,
+          onProgress: prog => setCatalogSyncProgress(prog),
+        });
+        setLastCatalogSyncResult(result);
+
+        if (result.agreementRequired && !overrideAcceptAgreements) {
+          // Wait for explicit user consent in CatalogSyncBanner
+        } else if (overrideAcceptAgreements && !result.agreementRequired && !result.cancelled) {
+          const updated = storage.saveSettings({ sourceAgreementsAccepted: true });
+          setSettings(updated);
+        }
+
+        await storage.hydrateCatalogFromDatabase();
+        setSources(storage.getSources());
+        setCatalogStats(storage.getCatalogCacheStats());
+        setSyncHistory(storage.getCatalogSyncHistory());
+
+        // Re-overlay installed & upgradable inventory on top of refreshed SQLite catalog
+        await syncWinGetInventory({ includeUpgrades: true, includeSources: false });
+      } catch (err: any) {
+        setSyncError(err?.message || String(err));
+      } finally {
+        catalogSyncInFlightRef.current = false;
+        setIsCatalogSyncing(false);
+        setCatalogSyncProgress(null);
+      }
+    },
+    [syncWinGetInventory]
+  );
+
+  const handleCancelCatalogSync = useCallback(async () => {
+    await wingetEngine.cancelCatalogSync();
+  }, []);
+
+  const handleAcceptAgreementsAndSync = useCallback(() => {
+    const updated = storage.saveSettings({
+      sourceAgreementsAccepted: true,
+      autoAcceptAgreements: true,
+    });
+    setSettings(updated);
+    void handleStartCatalogSync(undefined, true);
+  }, [handleStartCatalogSync]);
+
+  const handlePackageEnriched = useCallback(
+    (pkgId: string, source: string, details: Partial<Package>) => {
+      const targetKey = getPackageKey(pkgId, source);
+      setPackages(prev =>
+        prev.map(p => {
+          const key = p.packageKey || getPackageKey(p.id, p.source);
+          if (key !== targetKey) return p;
+          return {
+            ...p,
+            ...details,
+            homepage: details.homepage || p.homepage,
+            publisherUrl: details.publisherUrl || p.publisherUrl,
+            license: details.license || p.license,
+            releaseDate: details.releaseDate || p.releaseDate,
+            description: details.description || p.description,
+            longDescription: details.longDescription || p.longDescription,
+            tags: details.tags && details.tags.length > 0 ? details.tags : p.tags,
+            architectures:
+              details.architectures && details.architectures.length > 0
+                ? details.architectures
+                : p.architectures,
+            category:
+              details.category && details.category !== 'Uncategorized'
+                ? details.category
+                : p.category,
+          };
+        })
+      );
     },
     []
   );
@@ -164,16 +310,51 @@ function AppShellContent() {
       if (!mounted) return;
 
       const hydratedSettings = storage.getSettings();
-      setPackages(storage.getPackages());
-      setSources(storage.getSources());
+      const hydratedPackages = storage.getPackages();
+      const hydratedStats = storage.getCatalogCacheStats();
+      const hydratedSources = storage.getSources();
+
+      setPackages(hydratedPackages);
+      setSources(hydratedSources);
       setCollections(storage.getCollections());
       setSettings(hydratedSettings);
       setHistoryTasks(storage.getHistoryTasks());
+      setCatalogStats(hydratedStats);
+      setSyncHistory(storage.getCatalogSyncHistory());
 
-      await syncWinGetInventory({
+      const { env, discoveredSourceNames } = await syncWinGetInventory({
         includeUpgrades: hydratedSettings.checkUpdatesOnStartup,
         includeSources: true,
       });
+
+      if (!mounted || hasAutoSyncedRef.current) return;
+      hasAutoSyncedRef.current = true;
+
+      const shouldAutoSync =
+        isTauriEnvironment() &&
+        env.isInstalled &&
+        hydratedSettings.autoSyncCatalog &&
+        hydratedSettings.syncCatalogOnStartup;
+
+      if (shouldAutoSync) {
+        const cachedSourceNames = new Set(
+          hydratedSources.filter(s => s.lastSyncAt).map(s => s.name.toLowerCase())
+        );
+        const sourcesChanged = discoveredSourceNames.some(
+          name => !cachedSourceNames.has(name.toLowerCase())
+        );
+        const nonExternalCatalogCount = storage
+          .getPackages()
+          .filter(p => !p.isExternal).length;
+        const stale = isCatalogCacheStale(
+          hydratedStats.lastSyncAt,
+          hydratedSettings.catalogRefreshIntervalHours
+        );
+
+        if (nonExternalCatalogCount === 0 || stale || sourcesChanged) {
+          void handleStartCatalogSync();
+        }
+      }
     };
 
     void init();
@@ -215,7 +396,7 @@ function AppShellContent() {
       unsubQueue();
       unsubComplete();
     };
-  }, [syncWinGetInventory]);
+  }, [syncWinGetInventory, handleStartCatalogSync]);
 
   // Theme synchronization with dark / light / system
   useEffect(() => {
@@ -248,9 +429,12 @@ function AppShellContent() {
     }
   }, [settings.theme]);
 
-  const handleSyncWinGet = useCallback(() => {
-    void syncWinGetInventory({ includeUpgrades: true, includeSources: true });
-  }, [syncWinGetInventory]);
+  const handleSyncWinGet = useCallback(async () => {
+    await syncWinGetInventory({ includeUpgrades: true, includeSources: true });
+    if (isTauriEnvironment()) {
+      await handleStartCatalogSync();
+    }
+  }, [syncWinGetInventory, handleStartCatalogSync]);
 
   const handleRefreshEnvironment = useCallback(async (explicitPath?: string) => {
     setIsRefreshingEnv(true);
@@ -263,8 +447,8 @@ function AppShellContent() {
   }, []);
 
   // Global Keyboard Shortcuts
-  const shortcutRef = useRef({ quickSearchOpen, uacPackage, detailedPackageId, terminalOpen });
-  shortcutRef.current = { quickSearchOpen, uacPackage, detailedPackageId, terminalOpen };
+  const shortcutRef = useRef({ quickSearchOpen, uacPackage, detailedPackageKey, terminalOpen });
+  shortcutRef.current = { quickSearchOpen, uacPackage, detailedPackageKey, terminalOpen };
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -284,7 +468,7 @@ function AppShellContent() {
 
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'r') {
         e.preventDefault();
-        handleSyncWinGet();
+        void handleSyncWinGet();
         return;
       }
 
@@ -315,7 +499,7 @@ function AppShellContent() {
         const cur = shortcutRef.current;
         if (cur.quickSearchOpen) setQuickSearchOpen(false);
         else if (cur.uacPackage) setUacPackage(null);
-        else if (cur.detailedPackageId) setDetailedPackageId(null);
+        else if (cur.detailedPackageKey) setDetailedPackageKey(null);
         else if (cur.terminalOpen) setTerminalOpen(false);
       }
     };
@@ -415,10 +599,14 @@ function AppShellContent() {
         setPinError(`WinGet could not ${pin ? 'pin' : 'unpin'} ${pkg.name}.`);
         return;
       }
-      storage.updatePackage(pkg.id, {
-        isPinned: pin,
-        pinnedVersion: pin ? pkg.installedVersion || pkg.version : undefined,
-      });
+      storage.updatePackage(
+        pkg.id,
+        {
+          isPinned: pin,
+          pinnedVersion: pin ? pkg.installedVersion || pkg.version : undefined,
+        },
+        pkg.source
+      );
       setPackages(storage.getPackages());
     } catch (err: any) {
       setPinError(`Pin failed for ${pkg.name}: ${err?.message || String(err)}`);
@@ -426,9 +614,13 @@ function AppShellContent() {
   };
 
   const handleExcludePackage = (pkg: Package, exclude: boolean) => {
-    const updated = storage.updatePackage(pkg.id, {
-      isExcludedFromUpdates: exclude,
-    });
+    const updated = storage.updatePackage(
+      pkg.id,
+      {
+        isExcludedFromUpdates: exclude,
+      },
+      pkg.source
+    );
     if (updated) {
       setPackages(storage.getPackages());
     }
@@ -462,12 +654,15 @@ function AppShellContent() {
     }
   };
 
-  const handleClearCache = () => {
-    invalidateIconCache();
-    const refreshed = storage.clearPackageCache();
-    setPackages(refreshed);
+  const handleClearCache = async () => {
+    await clearPersistentIconCache();
+    await storage.clearCatalogCache();
+    setLastCatalogSyncResult(null);
+    setPackages(storage.getPackages());
+    setCatalogStats(storage.getCatalogCacheStats());
+    setSyncHistory(storage.getCatalogSyncHistory());
     if (isTauriEnvironment()) {
-      void syncWinGetInventory({ includeUpgrades: true, includeSources: true });
+      await syncWinGetInventory({ includeUpgrades: true, includeSources: true });
     }
   };
 
@@ -477,6 +672,9 @@ function AppShellContent() {
     setSources(storage.getSources());
     setCollections(storage.getCollections());
     setSettings(storage.getSettings());
+    setCatalogStats(storage.getCatalogCacheStats());
+    setSyncHistory([]);
+    setLastCatalogSyncResult(null);
     setHistoryTasks([]);
     if (isTauriEnvironment()) {
       void syncWinGetInventory({ includeUpgrades: true, includeSources: true });
@@ -529,10 +727,10 @@ function AppShellContent() {
             selectedCategory={selectedCategory}
             onClearCategory={() => setSelectedCategory(null)}
             onOpenQuickSearch={() => setQuickSearchOpen(true)}
-            onRefreshCatalog={handleSyncWinGet}
+            onRefreshCatalog={() => void handleSyncWinGet()}
             onNavigateToActivity={() => setCurrentPage('downloads')}
             activeOperationsCount={activeDownloadsCount}
-            isRefreshing={isSyncing}
+            isRefreshing={isSyncing || isCatalogSyncing}
             theme={settings.theme}
             onToggleTheme={() => {
               const nextTheme = settings.theme === 'dark' ? 'light' : 'dark';
@@ -557,7 +755,15 @@ function AppShellContent() {
               <HomePage
                 packages={packages}
                 environment={environment}
-                onOpenDetails={pkg => setDetailedPackageId(pkg.id)}
+                isSyncing={isCatalogSyncing}
+                syncProgress={catalogSyncProgress}
+                lastSyncResult={lastCatalogSyncResult}
+                syncHistory={syncHistory}
+                catalogStats={catalogStats}
+                onStartSync={targetSources => void handleStartCatalogSync(targetSources)}
+                onCancelSync={() => void handleCancelCatalogSync()}
+                onAcceptAgreementsAndSync={handleAcceptAgreementsAndSync}
+                onOpenDetails={openPackageDetails}
                 onActionClick={handleActionClick}
                 onToggleFavorite={handleToggleFavorite}
                 onNavigateToUpdates={() => setCurrentPage('updates')}
@@ -575,10 +781,20 @@ function AppShellContent() {
             {currentPage === 'discover' && (
               <DiscoverPage
                 packages={packages}
-                onOpenDetails={pkg => setDetailedPackageId(pkg.id)}
+                sources={sources}
+                onOpenDetails={openPackageDetails}
                 onActionClick={handleActionClick}
                 onToggleFavorite={handleToggleFavorite}
+                onPackageEnriched={handlePackageEnriched}
                 initialCategory={selectedCategory}
+                isSyncing={isCatalogSyncing}
+                syncProgress={catalogSyncProgress}
+                lastSyncResult={lastCatalogSyncResult}
+                syncHistory={syncHistory}
+                catalogStats={catalogStats}
+                onStartSync={targetSources => void handleStartCatalogSync(targetSources)}
+                onCancelSync={() => void handleCancelCatalogSync()}
+                onAcceptAgreementsAndSync={handleAcceptAgreementsAndSync}
               />
             )}
 
@@ -587,20 +803,22 @@ function AppShellContent() {
                 packages={packages}
                 selectedCategory={selectedCategory}
                 onSelectCategory={cat => setSelectedCategory(cat)}
-                onOpenDetails={pkg => setDetailedPackageId(pkg.id)}
+                onOpenDetails={openPackageDetails}
                 onActionClick={handleActionClick}
                 onToggleFavorite={handleToggleFavorite}
+                isSyncing={isCatalogSyncing}
+                onStartSync={() => void handleStartCatalogSync()}
               />
             )}
 
             {currentPage === 'installed' && (
               <InstalledPage
                 packages={packages}
-                onOpenDetails={pkg => setDetailedPackageId(pkg.id)}
+                onOpenDetails={openPackageDetails}
                 onActionClick={handleActionClick}
                 onToggleFavorite={handleToggleFavorite}
                 onExportManifest={handleExportManifest}
-                onRefreshInstalled={handleSyncWinGet}
+                onRefreshInstalled={() => void syncWinGetInventory({ includeUpgrades: true })}
                 isRefreshing={isSyncing}
               />
             )}
@@ -610,12 +828,12 @@ function AppShellContent() {
                 packages={packages}
                 activeTasks={activeTasks}
                 queue={queue}
-                onOpenDetails={pkg => setDetailedPackageId(pkg.id)}
+                onOpenDetails={openPackageDetails}
                 onActionClick={handleActionClick}
                 onUpdateAll={handleUpdateAll}
                 onPinPackage={handlePinPackage}
                 onExcludePackage={handleExcludePackage}
-                onScanUpdates={handleSyncWinGet}
+                onScanUpdates={() => void syncWinGetInventory({ includeUpgrades: true })}
                 isScanning={isSyncing}
                 pinError={pinError}
               />
@@ -628,8 +846,9 @@ function AppShellContent() {
                 activeTask={activeTask}
                 activeTasks={activeTasks}
                 historyTasks={historyTasks}
-                onCancelTask={id => installationQueue.cancel(id)}
+                onCancelTask={id => void installationQueue.cancel(id)}
                 onRetryTask={id => installationQueue.retry(id)}
+                onClearQueue={() => installationQueue.clearQueue()}
                 onClearHistory={() => {
                   storage.clearHistory();
                   setHistoryTasks([]);
@@ -645,7 +864,7 @@ function AppShellContent() {
               <LibraryPage
                 packages={packages}
                 collections={collections}
-                onOpenDetails={pkg => setDetailedPackageId(pkg.id)}
+                onOpenDetails={openPackageDetails}
                 onActionClick={handleActionClick}
                 onToggleFavorite={handleToggleFavorite}
                 onUpdateCollections={cols => setCollections(cols)}
@@ -667,7 +886,8 @@ function AppShellContent() {
                 sources={sources}
                 onUpdateSources={srcs => setSources(srcs)}
                 onRefreshAllSources={handleSyncWinGet}
-                isRefreshing={isSyncing}
+                onSyncSource={sourceName => handleStartCatalogSync([sourceName])}
+                isRefreshing={isSyncing || isCatalogSyncing}
               />
             )}
 
@@ -675,12 +895,18 @@ function AppShellContent() {
               <SettingsPage
                 settings={settings}
                 environment={environment}
+                sources={sources}
+                catalogStats={catalogStats}
+                syncHistory={syncHistory}
+                isCatalogSyncing={isCatalogSyncing}
                 onUpdateSettings={upd => {
                   const updated = storage.saveSettings(upd);
                   setSettings(updated);
                 }}
                 onResetDefaults={handleResetDefaults}
-                onClearCache={handleClearCache}
+                onClearCache={() => void handleClearCache()}
+                onStartCatalogSync={targetSources => void handleStartCatalogSync(targetSources)}
+                onCancelCatalogSync={() => void handleCancelCatalogSync()}
                 onRefreshEnvironment={handleRefreshEnvironment}
                 isRefreshingEnvironment={isRefreshingEnv}
               />
@@ -693,18 +919,25 @@ function AppShellContent() {
         isOpen={terminalOpen}
         onClose={() => setTerminalOpen(false)}
         activeTask={activeTask}
+        activeTasks={activeTasks}
+        queue={queue}
         historyTasks={historyTasks}
         inspectedTaskId={inspectedTaskId}
+        onCancelTask={id => void installationQueue.cancel(id)}
       />
 
       <AppDetailsModal
         pkg={detailedPackage}
-        onClose={() => setDetailedPackageId(null)}
+        onClose={() => setDetailedPackageKey(null)}
         onActionClick={handleActionClick}
         onToggleFavorite={handleToggleFavorite}
+        onPackageEnriched={handlePackageEnriched}
         isActionActive={
           detailedPackage
-            ? installationQueue.hasPendingOrActiveForPackage(detailedPackage.id)
+            ? installationQueue.hasPendingOrActiveForPackage(
+                detailedPackage.id,
+                detailedPackage.source
+              )
             : false
         }
       />
@@ -721,7 +954,7 @@ function AppShellContent() {
         isOpen={quickSearchOpen}
         onClose={() => setQuickSearchOpen(false)}
         packages={packages}
-        onSelectPackage={pkg => setDetailedPackageId(pkg.id)}
+        onSelectPackage={openPackageDetails}
       />
     </div>
   );

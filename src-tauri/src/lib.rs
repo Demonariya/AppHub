@@ -1,6 +1,7 @@
 pub mod commands;
 pub mod database;
 pub mod errors;
+pub mod icons;
 pub mod models;
 pub mod security;
 pub mod winget;
@@ -27,6 +28,7 @@ pub fn run() {
     let db = DatabaseManager::new(&db_path)
         .unwrap_or_else(|_| DatabaseManager::in_memory().expect("in-memory db fallback"));
     let _ = db.mark_interrupted_history_failed();
+    let _ = db.mark_interrupted_sync_runs_cancelled();
 
     let ops = OperationManager::new();
 
@@ -38,11 +40,14 @@ pub fn run() {
         .manage(ops)
         .invoke_handler(tauri::generate_handler![
             check_winget_environment,
+            winget_sync_catalog,
+            cancel_winget_catalog_sync,
             winget_search,
             winget_list,
             winget_upgrade_list,
             winget_show,
             winget_show_versions,
+            probe_installer_size,
             winget_install,
             winget_uninstall,
             winget_upgrade,
@@ -56,6 +61,11 @@ pub fn run() {
             winget_source_update,
             winget_source_reset,
             send_desktop_notification,
+            db_get_catalog_packages,
+            db_get_catalog_stats,
+            db_get_catalog_sources_status,
+            db_get_catalog_sync_history,
+            db_clear_catalog_cache,
             db_get_all_settings,
             db_save_setting,
             db_get_favorites,
@@ -66,6 +76,8 @@ pub fn run() {
             db_get_collections,
             db_save_collection,
             db_delete_collection,
+            resolve_and_cache_icon,
+            invalidate_icon_cache,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

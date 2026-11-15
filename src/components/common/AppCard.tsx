@@ -121,7 +121,9 @@ export const AppCard: React.FC<AppCardProps> = ({
                 </span>
               )}
             </div>
-            <p className="text-xs text-[var(--text-secondary)] truncate mt-0.5">{pkg.publisher}</p>
+            <p className="text-xs text-[var(--text-secondary)] truncate mt-0.5">
+              {pkg.publisher || (pkg.isExternal ? 'Local Windows App' : `Source: ${pkg.source}`)}
+            </p>
           </div>
 
           <div className="flex items-center gap-0.5 shrink-0" onClick={e => e.stopPropagation()}>
@@ -156,11 +158,22 @@ export const AppCard: React.FC<AppCardProps> = ({
           <span className="truncate">{pkg.isExternal ? 'External' : pkg.category}</span>
           <span>·</span>
           <span className="shrink-0">v{pkg.installedVersion || pkg.latestVersion}</span>
-          {(pkg.formattedDownloadSize || pkg.formattedSize) && (
+          {(pkg.isInstalled
+            ? pkg.formattedInstalledSize || pkg.formattedDownloadSize || pkg.formattedSize
+            : pkg.formattedDownloadSize || pkg.formattedSize) && (
             <>
               <span>·</span>
-              <span className="shrink-0 text-[var(--text-secondary)]">
-                {pkg.formattedDownloadSize || pkg.formattedSize}
+              <span
+                className="shrink-0 text-[var(--text-secondary)]"
+                title={
+                  pkg.isInstalled && pkg.formattedInstalledSize
+                    ? 'Installed disk footprint'
+                    : 'Installer download size'
+                }
+              >
+                {pkg.isInstalled
+                  ? pkg.formattedInstalledSize || pkg.formattedDownloadSize || pkg.formattedSize
+                  : pkg.formattedDownloadSize || pkg.formattedSize}
               </span>
             </>
           )}

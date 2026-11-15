@@ -97,10 +97,18 @@ export const UACConfirmModal: React.FC<UACConfirmModalProps> = ({
                 v{pkg.latestVersion}
               </span>
             </div>
-            <div className="text-xs font-mono text-[var(--text-muted)] flex items-center gap-1.5 mt-0.5 truncate">
+            <div className="text-xs font-mono text-[var(--text-muted)] flex items-center gap-1.5 mt-0.5 truncate tabular-nums">
               <span className="truncate">{pkg.id}</span>
               <span>·</span>
-              <span className="truncate">{pkg.publisher}</span>
+              <span className="truncate">{pkg.publisher || pkg.source}</span>
+              {(pkg.formattedDownloadSize || pkg.formattedSize) && action !== 'uninstall' && (
+                <>
+                  <span>·</span>
+                  <span className="shrink-0 text-[var(--text-secondary)]">
+                    {pkg.formattedDownloadSize || pkg.formattedSize}
+                  </span>
+                </>
+              )}
             </div>
           </div>
         </div>

@@ -14,8 +14,11 @@ export interface IconSystemStats {
 /**
  * Returns diagnostics for a specific package.
  */
-export function getIconDiagnostics(packageId: string): IconDiagnosticInfo {
-  const cached = getCachedIcon(packageId);
+export function getIconDiagnostics(
+  packageId: string,
+  source?: string
+): IconDiagnosticInfo {
+  const cached = getCachedIcon(packageId, source);
   if (cached) {
     return cached.diagnostic;
   }
@@ -24,26 +27,28 @@ export function getIconDiagnostics(packageId: string): IconDiagnosticInfo {
   if (record) {
     return {
       packageId,
+      source,
       sourceType: record.sourceType,
       primaryUrl: record.svgDataUri ? 'data:image/svg+xml' : record.url || '',
-      fallbackUrl: record.url,
+      fallbackUrl: record.fallbackUrl || record.url,
       cacheHit: false,
       resolvedAt: Date.now(),
       verified: record.verified,
-      validationStatus: 'verified',
+      validationStatus: record.svgDataUri ? 'verified' : 'pending',
       notes: record.notes,
     };
   }
 
   return {
     packageId,
+    source,
     sourceType: 'neutral-placeholder',
     primaryUrl: 'data:image/svg+xml (neutral monogram)',
     cacheHit: false,
     resolvedAt: Date.now(),
     verified: false,
-    validationStatus: 'verified',
-    notes: 'Unregistered package; will use neutral category monogram.',
+    validationStatus: 'pending',
+    notes: 'Unregistered package; uses neutral category monogram unless manifest icon verifies.',
   };
 }
 

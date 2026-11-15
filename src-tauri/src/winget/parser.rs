@@ -2,6 +2,16 @@ use crate::models::{
     WinGetInstalledApp, WinGetPackage, WinGetShowDetails, WinGetSource, WinGetUpgradeInfo,
 };
 
+#[derive(Debug, Clone)]
+pub struct SearchInspection {
+    pub packages: Vec<WinGetPackage>,
+    pub agreement_required: bool,
+    pub no_results: bool,
+    pub is_complete: bool,
+    pub truncation_reason: Option<String>,
+    pub error_message: Option<String>,
+}
+
 fn normalize_winget_lines(output: &str) -> Vec<String> {
     let mut lines = Vec::new();
     for raw_line in output.lines() {
@@ -56,18 +66,65 @@ fn extract_column_starts(header: &str) -> Vec<(String, usize)> {
     cols
 }
 
-fn slice_char_range(line: &str, start_char: usize, end_char: Option<usize>) -> String {
-    let chars: Vec<char> = line.chars().collect();
-    if start_char >= chars.len() {
+fn adjust_column_boundaries(chars: &[char], col_defs: &[(String, usize)]) -> Vec<(usize, usize)> {
+    let mut bounds: Vec<(usize, usize)> = Vec::with_capacity(col_defs.len());
+    let mut prev_end = 0usize;
+
+    for i in 0..col_defs.len() {
+        let raw_start = if i == 0 {
+            col_defs[i].1.min(chars.len())
+        } else {
+            prev_end.max(col_defs[i].1).min(chars.len())
+        };
+
+        let end = if i + 1 < col_defs.len() {
+            let nominal_end = col_defs[i + 1].1.min(chars.len());
+            if nominal_end > raw_start
+                && nominal_end < chars.len()
+                && !chars[nominal_end].is_whitespace()
+                && !chars[nominal_end - 1].is_whitespace()
+            {
+                // Nominal boundary cut mid-token: search nearest whitespace boundary (right up to 8 chars, else left)
+                let mut adjusted = nominal_end;
+                let right_limit = (nominal_end + 8).min(chars.len());
+                let mut found = false;
+                for pos in nominal_end..right_limit {
+                    if chars[pos].is_whitespace() {
+                        adjusted = pos;
+                        found = true;
+                        break;
+                    }
+                }
+                if !found {
+                    let left_limit = nominal_end.saturating_sub(6).max(raw_start);
+                    for pos in (left_limit..nominal_end).rev() {
+                        if chars[pos].is_whitespace() {
+                            adjusted = pos + 1;
+                            break;
+                        }
+                    }
+                }
+                adjusted
+            } else {
+                nominal_end
+            }
+        } else {
+            chars.len()
+        };
+
+        let clamped_start = raw_start.min(end);
+        bounds.push((clamped_start, end));
+        prev_end = end;
+    }
+
+    bounds
+}
+
+fn slice_char_bounds(chars: &[char], start_char: usize, end_char: usize) -> String {
+    if start_char >= chars.len() || start_char >= end_char {
         return String::new();
     }
-    let end = match end_char {
-        Some(e) => e.min(chars.len()),
-        None => chars.len(),
-    };
-    if start_char >= end {
-        return String::new();
-    }
+    let end = end_char.min(chars.len());
     chars[start_char..end]
         .iter()
         .collect::<String>()
@@ -108,19 +165,17 @@ fn parse_table_rows(output: &str) -> (Vec<String>, Vec<Vec<String>>) {
             || lower.contains("require explicit targeting")
             || lower.starts_with("the following packages")
             || lower.starts_with("no package found")
+            || lower.contains("more results available")
+            || lower.starts_with("<additional entries")
         {
             break;
         }
 
+        let chars: Vec<char> = line.chars().collect();
+        let bounds = adjust_column_boundaries(&chars, &col_defs);
         let mut cells = Vec::with_capacity(col_defs.len());
-        for i in 0..col_defs.len() {
-            let start = col_defs[i].1;
-            let end = if i + 1 < col_defs.len() {
-                Some(col_defs[i + 1].1)
-            } else {
-                None
-            };
-            cells.push(slice_char_range(line, start, end));
+        for (start, end) in bounds {
+            cells.push(slice_char_bounds(&chars, start, end));
         }
 
         if cells.len() >= 2 && !cells[0].is_empty() && !cells[1].is_empty() {
@@ -144,8 +199,121 @@ fn find_col_index(headers: &[String], candidates: &[&str], fallback: usize) -> O
     }
 }
 
-/// Parse tabular output from `winget search`
+/// Infers a clean AppHub category ONLY when real manifest tags or description clearly match.
+/// Returns `None` when uncertain so callers map to `'Uncategorized'` instead of guessing arbitrarily.
+pub fn infer_category_from_metadata(tags: &[String], description: Option<&str>) -> Option<String> {
+    let mut corpus = String::new();
+    for tag in tags {
+        corpus.push(' ');
+        corpus.push_str(&tag.to_lowercase());
+    }
+    if let Some(desc) = description {
+        corpus.push(' ');
+        corpus.push_str(&desc.to_lowercase());
+    }
+    let text = corpus.trim();
+    if text.is_empty() {
+        return None;
+    }
+
+    let rules: &[(&str, &[&str])] = &[
+        ("Browsers", &["web browser", "browser", "chromium", "gecko"]),
+        (
+            "Development",
+            &[
+                "ide",
+                "compiler",
+                "sdk",
+                "programming",
+                "developer",
+                "git",
+                "docker",
+                "container",
+                "code editor",
+                "debugger",
+                "nodejs",
+                "python",
+                "rust",
+                "typescript",
+            ],
+        ),
+        (
+            "Compression",
+            &["archiver", "archive", "zip", "unzip", "7z", "rar", "tar", "compression"],
+        ),
+        (
+            "Security",
+            &[
+                "password",
+                "vpn",
+                "encryption",
+                "antivirus",
+                "firewall",
+                "security",
+                "privacy",
+                "2fa",
+                "keepass",
+            ],
+        ),
+        (
+            "Gaming",
+            &["game", "gaming", "launcher", "emulator", "steam", "directx"],
+        ),
+        (
+            "Multimedia",
+            &[
+                "media player",
+                "audio",
+                "video",
+                "music",
+                "codec",
+                "ffmpeg",
+                "streaming",
+                "image editor",
+                "photo",
+                "3d",
+            ],
+        ),
+        (
+            "Communication",
+            &["chat", "messaging", "voip", "email", "mail client", "video call", "conferencing"],
+        ),
+        (
+            "Productivity",
+            &["notes", "markdown", "office", "spreadsheet", "pdf", "calendar", "todo", "notion"],
+        ),
+        (
+            "Drivers and Hardware Utilities",
+            &["driver", "gpu", "peripheral", "firmware", "bios", "keyboard", "mouse utility"],
+        ),
+        (
+            "System Tools",
+            &["sysinternals", "benchmark", "monitoring", "disk", "partition", "registry", "diagnostics"],
+        ),
+        (
+            "Utilities",
+            &["utility", "clipboard", "screenshot", "window manager", "powertoys", "file manager"],
+        ),
+    ];
+
+    for (cat, keywords) in rules {
+        if keywords.iter().any(|kw| text.contains(kw)) {
+            return Some((*cat).to_string());
+        }
+    }
+
+    None
+}
+
+/// Parse tabular output from `winget search` without fabricating missing metadata fields.
 pub fn parse_search_output(output: &str) -> Vec<WinGetPackage> {
+    parse_search_output_for_source(output, None)
+}
+
+pub fn parse_search_output_for_source(
+    output: &str,
+    default_source: Option<&str>,
+) -> Vec<WinGetPackage> {
     let (headers, rows) = parse_table_rows(output);
     let mut packages = Vec::new();
 
@@ -153,10 +321,13 @@ pub fn parse_search_output(output: &str) -> Vec<WinGetPackage> {
         return packages;
     }
 
-    let name_idx = find_col_index(&headers, &["name"], 0).unwrap_or(0);
-    let id_idx = find_col_index(&headers, &["id"], 1).unwrap_or(1);
-    let ver_idx = find_col_index(&headers, &["version"], 2);
-    let src_idx = headers.iter().position(|h| h == "source");
+    let name_idx = find_col_index(&headers, &["name", "nombre", "nom"], 0).unwrap_or(0);
+    let id_idx = find_col_index(&headers, &["id", "kennung", "identifiant"], 1).unwrap_or(1);
+    let ver_idx = find_col_index(&headers, &["version", "versión"], 2);
+    let src_idx = headers
+        .iter()
+        .position(|h| matches!(h.as_str(), "source" | "quelle" | "origen"));
+    let now = chrono::Utc::now().timestamp_millis();
 
     for row in rows {
         let name = row.get(name_idx).cloned().unwrap_or_default();
@@ -173,27 +344,40 @@ pub fn parse_search_output(output: &str) -> Vec<WinGetPackage> {
             .and_then(|i| row.get(i))
             .cloned()
             .filter(|s| !s.is_empty())
+            .or_else(|| default_source.map(|s| s.to_string()))
             .unwrap_or_else(|| "winget".to_string());
 
-        let publisher = id
-            .split('.')
-            .next()
-            .filter(|s| !s.is_empty())
-            .unwrap_or("Unknown")
-            .to_string();
+        let is_official_source = source.eq_ignore_ascii_case("winget")
+            || source.eq_ignore_ascii_case("msstore");
 
         packages.push(WinGetPackage {
             id: id.clone(),
-            name: if name.is_empty() { id.clone() } else { name },
-            publisher,
+            name: if name.is_empty() { id } else { name },
+            publisher: None,
+            author: None,
             version: version.clone(),
             latest_version: version,
-            description: format!("WinGet package from {} source", source),
-            category: "Utilities".to_string(),
+            description: None,
+            category: None,
             source,
-            architectures: vec!["x64".to_string()],
-            license: "See package details".to_string(),
+            tags: Vec::new(),
+            architectures: Vec::new(),
+            license: None,
+            license_url: None,
             homepage: None,
+            publisher_url: None,
+            release_date: None,
+            release_notes: None,
+            installer_type: None,
+            installer_url: None,
+            installer_sha256: None,
+            download_size_bytes: None,
+            installed_size_bytes: None,
+            verified: is_official_source,
+            metadata_status: "summary".to_string(),
+            is_available: true,
+            last_observed_at: now,
+            last_metadata_refresh_at: None,
             is_installed: false,
             installed_version: None,
             is_pinned: false,
@@ -201,6 +385,116 @@ pub fn parse_search_output(output: &str) -> Vec<WinGetPackage> {
     }
 
     packages
+}
+
+/// Inspects full stdout/stderr and exit code from `winget search --query "" --source <source>`
+/// to accurately surface source agreement prompts, truncation/limit conditions, empty results, or errors.
+pub fn inspect_search_result(
+    stdout: &str,
+    stderr: &str,
+    exit_code: i32,
+    success: bool,
+    source_name: &str,
+) -> SearchInspection {
+    let combined = format!("{}\n{}", stdout, stderr);
+    let lower = combined.to_lowercase();
+
+    // 0x8a150044 (-1978335164) = WINGET_CLI_ERROR_SOURCE_AGREEMENTS_NOT_ACCEPTED
+    let agreement_required = lower.contains("source agreements")
+        || lower.contains("do you agree to all the source agreements")
+        || lower.contains("accept-source-agreements")
+        || exit_code == -1978335164;
+
+    if agreement_required {
+        return SearchInspection {
+            packages: Vec::new(),
+            agreement_required: true,
+            no_results: false,
+            is_complete: false,
+            truncation_reason: None,
+            error_message: Some(format!(
+                "WinGet source '{}' requires accepting source agreements before it can be queried.",
+                source_name
+            )),
+        };
+    }
+
+    let no_results = lower.contains("no package found")
+        || lower.contains("no packages found")
+        || lower.contains("no se encontró ningún paquete")
+        || lower.contains("es wurde kein paket gefunden")
+        || lower.contains("aucun package trouvé");
+
+    let packages = parse_search_output_for_source(stdout, Some(source_name));
+
+    if no_results && packages.is_empty() {
+        return SearchInspection {
+            packages,
+            agreement_required: false,
+            no_results: true,
+            is_complete: true,
+            truncation_reason: None,
+            error_message: None,
+        };
+    }
+
+    // Detect WinGet CLI or source truncation warnings honestly
+    let has_truncation_marker = lower.contains("more results")
+        || lower.contains("additional entries")
+        || lower.contains("truncated")
+        || lower.contains("max results");
+
+    let hit_cli_row_cap = packages.len() >= 1000
+        && (source_name.eq_ignore_ascii_case("msstore") || has_truncation_marker);
+
+    let (is_complete, truncation_reason) = if has_truncation_marker {
+        (
+            false,
+            Some(format!(
+                "WinGet reported truncated output for source '{}'; {} packages indexed. Use live search for specific uncached queries.",
+                source_name,
+                packages.len()
+            )),
+        )
+    } else if hit_cli_row_cap {
+        (
+            false,
+            Some(format!(
+                "Source '{}' returned {} packages (CLI/REST page cap threshold reached). Additional packages can still be queried via live search.",
+                source_name,
+                packages.len()
+            )),
+        )
+    } else if !success && packages.is_empty() {
+        (false, None)
+    } else {
+        (true, None)
+    };
+
+    let error_message = if !success && packages.is_empty() && !no_results {
+        let msg = if !stderr.trim().is_empty() {
+            stderr.trim().to_string()
+        } else if !stdout.trim().is_empty() {
+            stdout.trim().to_string()
+        } else {
+            format!(
+                "winget search for source '{}' failed with exit code {}",
+                source_name, exit_code
+            )
+        };
+        Some(msg)
+    } else {
+        None
+    };
+
+    SearchInspection {
+        packages,
+        agreement_required: false,
+        no_results,
+        is_complete,
+        truncation_reason,
+        error_message,
+    }
 }
 
 /// Parse tabular output from `winget list`
@@ -212,11 +506,15 @@ pub fn parse_list_output(output: &str) -> Vec<WinGetInstalledApp> {
         return apps;
     }
 
-    let name_idx = find_col_index(&headers, &["name"], 0).unwrap_or(0);
-    let id_idx = find_col_index(&headers, &["id"], 1).unwrap_or(1);
-    let ver_idx = find_col_index(&headers, &["version"], 2);
-    let avail_idx = headers.iter().position(|h| h == "available");
-    let src_idx = headers.iter().position(|h| h == "source");
+    let name_idx = find_col_index(&headers, &["name", "nombre", "nom"], 0).unwrap_or(0);
+    let id_idx = find_col_index(&headers, &["id", "kennung", "identifiant"], 1).unwrap_or(1);
+    let ver_idx = find_col_index(&headers, &["version", "versión"], 2);
+    let avail_idx = headers
+        .iter()
+        .position(|h| matches!(h.as_str(), "available" | "disponible" | "verfügbar"));
+    let src_idx = headers
+        .iter()
+        .position(|h| matches!(h.as_str(), "source" | "quelle" | "origen"));
 
     for row in rows {
         let name = row.get(name_idx).cloned().unwrap_or_default();
@@ -248,6 +546,7 @@ pub fn parse_list_output(output: &str) -> Vec<WinGetInstalledApp> {
             available_version,
             source,
             is_winget_managed,
+            installed_size_bytes: None,
         });
     }
 
@@ -263,11 +562,13 @@ pub fn parse_upgrade_output(output: &str) -> Vec<WinGetUpgradeInfo> {
         return upgrades;
     }
 
-    let name_idx = find_col_index(&headers, &["name"], 0).unwrap_or(0);
-    let id_idx = find_col_index(&headers, &["id"], 1).unwrap_or(1);
-    let ver_idx = find_col_index(&headers, &["version"], 2);
-    let avail_idx = find_col_index(&headers, &["available"], 3);
-    let src_idx = headers.iter().position(|h| h == "source");
+    let name_idx = find_col_index(&headers, &["name", "nombre", "nom"], 0).unwrap_or(0);
+    let id_idx = find_col_index(&headers, &["id", "kennung", "identifiant"], 1).unwrap_or(1);
+    let ver_idx = find_col_index(&headers, &["version", "versión"], 2);
+    let avail_idx = find_col_index(&headers, &["available", "disponible", "verfügbar"], 3);
+    let src_idx = headers
+        .iter()
+        .position(|h| matches!(h.as_str(), "source" | "quelle" | "origen"));
 
     for row in rows {
         let name = row.get(name_idx).cloned().unwrap_or_default();
@@ -294,13 +595,36 @@ pub fn parse_upgrade_output(output: &str) -> Vec<WinGetUpgradeInfo> {
     upgrades
 }
 
+fn parse_human_size_to_bytes(raw: &str) -> Option<u64> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut parts = trimmed.split_whitespace();
+    let num_str = parts.next()?.replace(',', "");
+    let value: f64 = num_str.parse().ok()?;
+    if value <= 0.0 || !value.is_finite() {
+        return None;
+    }
+    let unit = parts.next().unwrap_or("B").to_ascii_lowercase();
+    let multiplier = match unit.as_str() {
+        "b" | "byte" | "bytes" => 1.0,
+        "kb" | "kib" => 1024.0,
+        "mb" | "mib" => 1024.0 * 1024.0,
+        "gb" | "gib" => 1024.0 * 1024.0 * 1024.0,
+        "tb" | "tib" => 1024.0 * 1024.0 * 1024.0 * 1024.0,
+        _ => return None,
+    };
+    Some((value * multiplier).round() as u64)
+}
+
 /// Parses key-value & multi-line output from `winget show --id <id>`
 pub fn parse_show_output(output: &str, package_id: &str) -> WinGetShowDetails {
     let mut name = package_id.to_string();
-    let mut publisher = "Unknown Publisher".to_string();
+    let mut publisher: Option<String> = None;
     let mut version = "Unknown".to_string();
     let mut author = None;
-    let mut description = String::new();
+    let mut description_acc = String::new();
     let mut homepage = None;
     let mut publisher_url = None;
     let mut license = None;
@@ -310,6 +634,8 @@ pub fn parse_show_output(output: &str, package_id: &str) -> WinGetShowDetails {
     let mut installer_sha256 = None;
     let mut installer_type = None;
     let mut installer_url = None;
+    let mut download_size_bytes = None;
+    let mut architectures: Vec<String> = Vec::new();
     let mut tags: Vec<String> = Vec::new();
     let mut active_block: Option<String> = None;
 
@@ -338,18 +664,16 @@ pub fn parse_show_output(output: &str, package_id: &str) -> WinGetShowDetails {
         let is_indented = line.starts_with(' ') || line.starts_with('\t');
 
         if let Some((key, val)) = trimmed.split_once(':') {
-            // Check if value looks like a URL continuation inside a block
             let k = key.trim().to_lowercase();
             let v = val.trim().to_string();
 
-            if is_indented && k.starts_with("http") {
-                if active_block.as_deref() == Some("description") {
-                    if !description.is_empty() {
-                        description.push(' ');
-                    }
-                    description.push_str(trimmed);
-                    continue;
+            if is_indented && k.starts_with("http") && active_block.as_deref() == Some("description")
+            {
+                if !description_acc.is_empty() {
+                    description_acc.push(' ');
                 }
+                description_acc.push_str(trimmed);
+                continue;
             }
 
             active_block = Some(k.clone());
@@ -366,7 +690,7 @@ pub fn parse_show_output(output: &str, package_id: &str) -> WinGetShowDetails {
                 }
                 "publisher" => {
                     if !v.is_empty() {
-                        publisher = v;
+                        publisher = Some(v);
                     }
                 }
                 "publisher url" => {
@@ -386,7 +710,7 @@ pub fn parse_show_output(output: &str, package_id: &str) -> WinGetShowDetails {
                 }
                 "description" => {
                     if !v.is_empty() {
-                        description = v;
+                        description_acc = v;
                     }
                 }
                 "homepage" => {
@@ -424,9 +748,22 @@ pub fn parse_show_output(output: &str, package_id: &str) -> WinGetShowDetails {
                         installer_type = Some(v);
                     }
                 }
+                "architecture" => {
+                    if !v.is_empty() {
+                        let arch = v.to_lowercase();
+                        if !architectures.contains(&arch) {
+                            architectures.push(arch);
+                        }
+                    }
+                }
                 "download url" | "installer url" => {
                     if !v.is_empty() {
                         installer_url = Some(v);
+                    }
+                }
+                "size" | "installer size" | "download size" => {
+                    if let Some(bytes) = parse_human_size_to_bytes(&v) {
+                        download_size_bytes = Some(bytes);
                     }
                 }
                 "tags" => {
@@ -443,10 +780,10 @@ pub fn parse_show_output(output: &str, package_id: &str) -> WinGetShowDetails {
         } else if is_indented {
             match active_block.as_deref() {
                 Some("description") => {
-                    if !description.is_empty() {
-                        description.push(' ');
+                    if !description_acc.is_empty() {
+                        description_acc.push(' ');
                     }
-                    description.push_str(trimmed);
+                    description_acc.push_str(trimmed);
                 }
                 Some("release notes") => {
                     let existing = release_notes.get_or_insert_with(String::new);
@@ -465,6 +802,12 @@ pub fn parse_show_output(output: &str, package_id: &str) -> WinGetShowDetails {
         }
     }
 
+    let description = if description_acc.trim().is_empty() {
+        None
+    } else {
+        Some(description_acc)
+    };
+
     WinGetShowDetails {
         id: package_id.to_string(),
         name,
@@ -481,7 +824,8 @@ pub fn parse_show_output(output: &str, package_id: &str) -> WinGetShowDetails {
         installer_type,
         installer_url,
         installer_sha256,
-        architectures: vec!["x64".to_string()],
+        download_size_bytes,
+        architectures,
         tags,
     }
 }
@@ -520,6 +864,7 @@ pub fn parse_source_list_output(output: &str) -> Vec<WinGetSource> {
 
     let name_idx = find_col_index(&headers, &["name"], 0).unwrap_or(0);
     let arg_idx = find_col_index(&headers, &["argument", "arg"], 1).unwrap_or(1);
+    let type_idx = headers.iter().position(|h| h == "type");
 
     for row in rows {
         let name = row.get(name_idx).cloned().unwrap_or_default();
@@ -528,11 +873,22 @@ pub fn parse_source_list_output(output: &str) -> Vec<WinGetSource> {
             continue;
         }
         let is_official = name == "winget" || name == "msstore";
+        let source_type = type_idx
+            .and_then(|i| row.get(i))
+            .cloned()
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| {
+                if name == "msstore" {
+                    "Microsoft.Rest".to_string()
+                } else {
+                    "Microsoft.PreIndexed.Package".to_string()
+                }
+            });
 
         sources.push(WinGetSource {
             name,
             argument,
-            source_type: "Microsoft.PreIndexed.Package".to_string(),
+            source_type,
             is_official,
         });
     }
@@ -545,7 +901,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_search_output_with_spinner() {
+    fn test_parse_search_output_with_spinner_no_fabrication() {
         let raw = "\r   - \r\
 Name                   Id                         Version    Match        Source\n\
 --------------------------------------------------------------------------------\n\
@@ -556,8 +912,49 @@ Git                    Git.Git                    2.47.1     Tag: git     winget
         assert_eq!(pkgs[0].id, "Microsoft.VisualStudioCode");
         assert_eq!(pkgs[0].name, "Visual Studio Code");
         assert_eq!(pkgs[0].version, "1.95.3");
+        assert_eq!(pkgs[0].publisher, None);
+        assert_eq!(pkgs[0].description, None);
+        assert_eq!(pkgs[0].category, None);
+        assert_eq!(pkgs[0].license, None);
+        assert!(pkgs[0].architectures.is_empty());
+        assert_eq!(pkgs[0].metadata_status, "summary");
+        assert!(pkgs[0].verified);
         assert_eq!(pkgs[1].id, "Git.Git");
         assert_eq!(pkgs[1].version, "2.47.1");
+    }
+
+    #[test]
+    fn test_inspect_search_result_detects_agreements_and_truncation() {
+        let agreement_out = "The `msstore` source requires that you view the following agreements before using.\nDo you agree to all the source agreements terms?";
+        let insp1 = inspect_search_result(agreement_out, "", -1978335164, false, "msstore");
+        assert!(insp1.agreement_required);
+        assert!(!insp1.is_complete);
+
+        let truncated_out = "Name  Id  Version\n-----------------\nFoo   Foo.Bar 1.0.0\n<additional entries found, truncated>";
+        let insp2 = inspect_search_result(truncated_out, "", 0, true, "custom-rest");
+        assert_eq!(insp2.packages.len(), 1);
+        assert!(!insp2.is_complete);
+        assert!(insp2.truncation_reason.is_some());
+
+        let empty_out = "No package found matching input criteria.";
+        let insp3 = inspect_search_result(empty_out, "", -1978335212, false, "custom");
+        assert!(insp3.no_results);
+        assert!(insp3.is_complete);
+        assert!(insp3.error_message.is_none());
+    }
+
+    #[test]
+    fn test_infer_category_honest() {
+        assert_eq!(
+            infer_category_from_metadata(&["browser".to_string(), "web".to_string()], None),
+            Some("Browsers".to_string())
+        );
+        assert_eq!(
+            infer_category_from_metadata(&[], Some("A lightweight code editor for developers")),
+            Some("Development".to_string())
+        );
+        assert_eq!(infer_category_from_metadata(&[], None), None);
+        assert_eq!(infer_category_from_metadata(&["randomtag".to_string()], Some("Acme tool")), None);
     }
 
     #[test]
@@ -622,17 +1019,24 @@ Tags:
   ide
 Installer:
   Installer Type: inno
+  Architecture: x64
   Installer SHA256: abc123
+  Installer Size: 98.4 MB
 "#;
         let details = parse_show_output(raw, "Microsoft.VisualStudioCode");
         assert_eq!(details.id, "Microsoft.VisualStudioCode");
         assert_eq!(details.name, "Visual Studio Code");
         assert_eq!(details.version, "1.95.3");
-        assert_eq!(details.publisher, "Microsoft Corporation");
-        assert_eq!(details.description, "Code editing redefined. Built on open source.");
+        assert_eq!(details.publisher, Some("Microsoft Corporation".to_string()));
+        assert_eq!(
+            details.description,
+            Some("Code editing redefined. Built on open source.".to_string())
+        );
         assert_eq!(details.license, Some("MIT".to_string()));
         assert_eq!(details.installer_type, Some("inno".to_string()));
+        assert_eq!(details.architectures, vec!["x64"]);
         assert_eq!(details.installer_sha256, Some("abc123".to_string()));
+        assert!(details.download_size_bytes.is_some());
         assert_eq!(details.tags, vec!["editor", "ide"]);
     }
 
@@ -662,6 +1066,33 @@ winget  https://cdn.winget.microsoft.com/cache        false
         assert_eq!(sources.len(), 2);
         assert_eq!(sources[0].name, "msstore");
         assert!(sources[0].is_official);
+        assert_eq!(sources[0].source_type, "Microsoft.Rest");
         assert_eq!(sources[1].argument, "https://cdn.winget.microsoft.com/cache");
+    }
+
+    #[test]
+    fn test_parse_table_with_unicode_localized_headers_and_overflow() {
+        let raw = "\
+Nombre                 Kennung                 Versión   Quelle\r
+-----------------------------------------------------------------\r
+Zen – Fast Browser     Zen-Team.Zen-Browser    1.0.2     winget\r
+µTorrent Classic       BitTorrent.uTorrent.Pro 3.6.0     winget\r
+";
+        let pkgs = parse_search_output(raw);
+        assert_eq!(pkgs.len(), 2);
+        assert_eq!(pkgs[0].name, "Zen – Fast Browser");
+        assert_eq!(pkgs[0].id, "Zen-Team.Zen-Browser");
+        assert_eq!(pkgs[0].source, "winget");
+        assert_eq!(pkgs[1].id, "BitTorrent.uTorrent.Pro");
+        assert_eq!(pkgs[1].version, "3.6.0");
+
+        let no_source_raw = "\
+Name            Id               Version\n\
+----------------------------------------\n\
+7-Zip           7zip.7zip        24.09\n";
+        let single_src = parse_search_output_for_source(no_source_raw, Some("winget"));
+        assert_eq!(single_src.len(), 1);
+        assert_eq!(single_src[0].id, "7zip.7zip");
+        assert_eq!(single_src[0].source, "winget");
     }
 }

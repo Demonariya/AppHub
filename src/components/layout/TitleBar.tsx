@@ -49,7 +49,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
   return (
     <div
       data-tauri-drag-region
-      className="h-9 w-full bg-[var(--surface-shell)] border-b border-[var(--border-subtle)] flex items-center justify-between px-3 text-xs select-none sticky top-0 z-50 shrink-0"
+      className="h-[var(--titlebar-h,36px)] w-full bg-[var(--surface-shell)] border-b border-[var(--border-subtle)] flex items-center justify-between px-3 text-xs select-none sticky top-0 z-50 shrink-0"
     >
       {/* Left: Brand & Real WinGet Status */}
       <div className="flex items-center gap-3 min-w-0" data-tauri-drag-region>

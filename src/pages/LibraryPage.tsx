@@ -74,7 +74,7 @@ export const LibraryPage: React.FC<LibraryPageProps> = ({
       return (
         p.name.toLowerCase().includes(q) ||
         p.id.toLowerCase().includes(q) ||
-        p.publisher.toLowerCase().includes(q)
+        (p.publisher || '').toLowerCase().includes(q)
       );
     });
     return [...filtered].sort((a, b) => {
@@ -259,7 +259,7 @@ export const LibraryPage: React.FC<LibraryPageProps> = ({
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
               {favorites.map(pkg => (
                 <AppCard
-                  key={pkg.id}
+                  key={pkg.packageKey || `${pkg.source}::${pkg.id}`}
                   pkg={pkg}
                   onOpenDetails={onOpenDetails}
                   onActionClick={onActionClick}
@@ -365,7 +365,7 @@ export const LibraryPage: React.FC<LibraryPageProps> = ({
                       <div className="space-y-1">
                         {colPkgs.slice(0, 4).map(p => (
                           <button
-                            key={p.id}
+                            key={p.packageKey || `${p.source}::${p.id}`}
                             type="button"
                             onClick={() => onOpenDetails(p)}
                             className="w-full flex items-center justify-between text-xs text-[var(--text-secondary)] hover:text-[var(--accent-primary)] py-0.5 cursor-pointer text-left"
@@ -595,7 +595,7 @@ export const LibraryPage: React.FC<LibraryPageProps> = ({
                 const checked = editingCollection.packageIds.includes(pkg.id);
                 return (
                   <label
-                    key={pkg.id}
+                    key={pkg.packageKey || `${pkg.source}::${pkg.id}`}
                     className="flex items-center justify-between gap-3 px-3 py-2 hover:bg-[var(--surface-hover)] cursor-pointer text-xs"
                   >
                     <div className="flex items-center gap-2.5 min-w-0">

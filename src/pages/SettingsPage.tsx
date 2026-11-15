@@ -1,5 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { AppSettings, WinGetEnvironment, Architecture } from '../types';
+import {
+  AppSettings,
+  WinGetEnvironment,
+  Architecture,
+  PackageSource,
+  CatalogCacheStats,
+  CatalogSyncRunRecord,
+} from '../types';
 import {
   Sliders,
   Palette,
@@ -15,6 +22,9 @@ import {
   AlertTriangle,
   ExternalLink,
   Trash2,
+  Database,
+  FileText,
+  X,
 } from 'lucide-react';
 import {
   PageHeader,
@@ -24,13 +34,21 @@ import {
   StatusBadge,
   useToast,
 } from '../components/ui';
+import { CatalogSyncLogDialog } from '../components/common/CatalogSyncBanner';
+import { formatBytes } from '../services/catalog';
 
 interface SettingsPageProps {
   settings: AppSettings;
   environment: WinGetEnvironment;
+  sources: PackageSource[];
+  catalogStats: CatalogCacheStats;
+  syncHistory: CatalogSyncRunRecord[];
+  isCatalogSyncing: boolean;
   onUpdateSettings: (settings: Partial<AppSettings>) => void;
   onResetDefaults: () => void;
   onClearCache: () => void;
+  onStartCatalogSync: (targetSources?: string[]) => void;
+  onCancelCatalogSync: () => void;
   onRefreshEnvironment?: (explicitPath?: string) => Promise<void> | void;
   isRefreshingEnvironment?: boolean;
 }
@@ -38,6 +56,7 @@ interface SettingsPageProps {
 type SettingsSectionId =
   | 'general'
   | 'appearance'
+  | 'catalog'
   | 'applications'
   | 'downloads'
   | 'notifications'
@@ -48,9 +67,15 @@ type SettingsSectionId =
 export const SettingsPage: React.FC<SettingsPageProps> = ({
   settings,
   environment,
+  sources,
+  catalogStats,
+  syncHistory,
+  isCatalogSyncing,
   onUpdateSettings,
   onResetDefaults,
   onClearCache,
+  onStartCatalogSync,
+  onCancelCatalogSync,
   onRefreshEnvironment,
   isRefreshingEnvironment = false,
 }) => {
@@ -59,6 +84,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   const [wingetPathDraft, setWingetPathDraft] = useState(settings.wingetPath || '');
   const [confirmResetOpen, setConfirmResetOpen] = useState(false);
   const [confirmClearCacheOpen, setConfirmClearCacheOpen] = useState(false);
+  const [syncLogOpen, setSyncLogOpen] = useState(false);
 
   useEffect(() => {
     setWingetPathDraft(settings.wingetPath || '');
@@ -69,6 +95,23 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     onUpdateSettings({ [key]: updated });
     showToast({
       title: label ? `${label} ${updated ? 'enabled' : 'disabled'}` : 'Preference saved',
+      tone: 'success',
+    });
+  };
+
+  const handleToggleSyncSource = (sourceName: string) => {
+    const allNames = sources.map(s => s.name);
+    const current =
+      settings.enabledSyncSources && settings.enabledSyncSources.length > 0
+        ? settings.enabledSyncSources
+        : allNames;
+    const isCurrentlyEnabled = current.some(n => n.toLowerCase() === sourceName.toLowerCase());
+    const next = isCurrentlyEnabled
+      ? current.filter(n => n.toLowerCase() !== sourceName.toLowerCase())
+      : [...current, sourceName];
+    onUpdateSettings({ enabledSyncSources: next });
+    showToast({
+      title: `${sourceName} sync ${isCurrentlyEnabled ? 'disabled' : 'enabled'}`,
       tone: 'success',
     });
   };
@@ -88,6 +131,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   const navTabs: { id: SettingsSectionId; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
     { id: 'general', label: 'General & Startup', icon: Sliders },
     { id: 'appearance', label: 'Appearance', icon: Palette },
+    { id: 'catalog', label: 'Catalog Synchronization', icon: Database },
     { id: 'applications', label: 'Applications & WinGet', icon: AppWindow },
     { id: 'downloads', label: 'Downloads & Cache', icon: HardDriveDownload },
     { id: 'notifications', label: 'Notifications & Privacy', icon: Bell },
@@ -100,7 +144,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-6 animate-page-in">
       <PageHeader
         title="Settings"
-        subtitle="Configure AppHub appearance, WinGet CLI behavior, download concurrency, and diagnostics."
+        subtitle="Configure AppHub appearance, automatic WinGet catalog sync, CLI behavior, and diagnostics."
         actions={
           <Button
             size="md"
@@ -215,7 +259,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                           onUpdateSettings({ theme: t.id as AppSettings['theme'] });
                           showToast({ title: `Theme set to ${t.label}`, tone: 'success' });
                         }}
-                        className={`p-3.5 rounded-[10px] border text-left transition-all cursor-pointer ${
+                        className={`p-4 rounded-[10px] border text-left transition-all cursor-pointer ${
                           selected
                             ? 'border-[var(--accent-primary)] bg-[var(--accent-soft)]'
                             : 'border-[var(--border-subtle)] bg-[var(--surface-subtle)] hover:border-[var(--border-strong)]'
@@ -259,7 +303,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                           onUpdateSettings({ density: d.id as AppSettings['density'] });
                           showToast({ title: `Density set to ${d.label}`, tone: 'success' });
                         }}
-                        className={`p-3.5 rounded-[10px] border text-left transition-all cursor-pointer ${
+                        className={`p-4 rounded-[10px] border text-left transition-all cursor-pointer ${
                           selected
                             ? 'border-[var(--accent-primary)] bg-[var(--accent-soft)]'
                             : 'border-[var(--border-subtle)] bg-[var(--surface-subtle)] hover:border-[var(--border-strong)]'
@@ -275,6 +319,224 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                     );
                   })}
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* Catalog Synchronization */}
+          {activeTab === 'catalog' && (
+            <div className="space-y-6">
+              <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-[var(--border-subtle)]">
+                <div>
+                  <h2 className="text-sm font-semibold text-[var(--text-primary)]">
+                    WinGet Catalog Synchronization
+                  </h2>
+                  <p className="text-xs text-[var(--text-secondary)] mt-0.5">
+                    Configure background package discovery from your installed WinGet repositories.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    leftIcon={<FileText className="w-3.5 h-3.5" />}
+                    onClick={() => setSyncLogOpen(true)}
+                  >
+                    View Sync Log
+                  </Button>
+                  {isCatalogSyncing ? (
+                    <Button
+                      size="sm"
+                      variant="danger"
+                      leftIcon={<X className="w-3.5 h-3.5" />}
+                      onClick={onCancelCatalogSync}
+                    >
+                      Cancel Sync
+                    </Button>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      leftIcon={<RefreshCw className="w-3.5 h-3.5" />}
+                      onClick={() => onStartCatalogSync()}
+                    >
+                      Sync Catalog Now
+                    </Button>
+                  )}
+                </div>
+              </div>
+
+              {/* Cache Diagnostics Strip */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs font-mono">
+                <div className="p-3 rounded-[10px] bg-[var(--surface-subtle)] border border-[var(--border-subtle)]">
+                  <div className="text-[var(--text-muted)]">Cached Packages</div>
+                  <div className="text-sm font-bold text-[var(--text-primary)] mt-1 tabular-nums">
+                    {catalogStats.availablePackages}
+                  </div>
+                </div>
+                <div className="p-3 rounded-[10px] bg-[var(--surface-subtle)] border border-[var(--border-subtle)]">
+                  <div className="text-[var(--text-muted)]">Enriched Metadata</div>
+                  <div className="text-sm font-bold text-[var(--text-primary)] mt-1 tabular-nums">
+                    {catalogStats.enrichedPackages}
+                  </div>
+                </div>
+                <div className="p-3 rounded-[10px] bg-[var(--surface-subtle)] border border-[var(--border-subtle)]">
+                  <div className="text-[var(--text-muted)]">Last Complete Sync</div>
+                  <div className="text-xs font-semibold text-[var(--text-primary)] mt-1 truncate">
+                    {catalogStats.lastSyncAt
+                      ? new Date(catalogStats.lastSyncAt).toLocaleString()
+                      : 'Never'}
+                  </div>
+                </div>
+                <div className="p-3 rounded-[10px] bg-[var(--surface-subtle)] border border-[var(--border-subtle)]">
+                  <div className="text-[var(--text-muted)]">SQLite Footprint</div>
+                  <div className="text-sm font-bold text-[var(--text-primary)] mt-1 tabular-nums">
+                    {catalogStats.dbSizeBytes > 0 ? formatBytes(catalogStats.dbSizeBytes) : '—'}
+                  </div>
+                </div>
+              </div>
+
+              {/* Sync Toggles */}
+              <div className="space-y-4">
+                <label className="flex items-start gap-3 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={settings.autoSyncCatalog}
+                    onChange={() => handleToggle('autoSyncCatalog', 'Automatic catalog synchronization')}
+                    className="w-4 h-4 rounded accent-[var(--accent-primary)] mt-0.5 cursor-pointer"
+                  />
+                  <div>
+                    <div className="text-xs font-semibold text-[var(--text-primary)]">
+                      Enable Automatic Catalog Synchronization
+                    </div>
+                    <div className="text-xs text-[var(--text-secondary)] mt-0.5">
+                      Automatically refreshes package listings when cache is empty, stale, or sources change.
+                    </div>
+                  </div>
+                </label>
+
+                <label className="flex items-start gap-3 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={settings.syncCatalogOnStartup}
+                    onChange={() => handleToggle('syncCatalogOnStartup', 'Startup catalog sync')}
+                    className="w-4 h-4 rounded accent-[var(--accent-primary)] mt-0.5 cursor-pointer"
+                  />
+                  <div>
+                    <div className="text-xs font-semibold text-[var(--text-primary)]">
+                      Check Catalog Freshness on Startup
+                    </div>
+                    <div className="text-xs text-[var(--text-secondary)] mt-0.5">
+                      Verifies cache age against the refresh interval when launching AppHub.
+                    </div>
+                  </div>
+                </label>
+
+                <label className="flex items-start gap-3 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={settings.sourceAgreementsAccepted}
+                    onChange={() => handleToggle('sourceAgreementsAccepted', 'WinGet source agreements')}
+                    className="w-4 h-4 rounded accent-[var(--accent-primary)] mt-0.5 cursor-pointer"
+                  />
+                  <div>
+                    <div className="text-xs font-semibold text-[var(--text-primary)]">
+                      WinGet Source Agreements Accepted
+                    </div>
+                    <div className="text-xs text-[var(--text-secondary)] mt-0.5">
+                      Authorizes passing <code className="font-mono text-[var(--accent-primary)]">--accept-source-agreements</code> during catalog synchronization.
+                    </div>
+                  </div>
+                </label>
+              </div>
+
+              <div className="pt-4 border-t border-[var(--border-subtle)]">
+                <label className="text-xs font-medium text-[var(--text-primary)] block mb-1.5">
+                  Refresh Interval
+                </label>
+                <select
+                  value={settings.catalogRefreshIntervalHours || 24}
+                  onChange={e => {
+                    onUpdateSettings({ catalogRefreshIntervalHours: Number(e.target.value) });
+                    showToast({ title: 'Catalog refresh interval updated', tone: 'success' });
+                  }}
+                  className="w-full sm:w-72 h-9 px-3 bg-[var(--surface-input)] border border-[var(--border-subtle)] rounded-[8px] text-xs font-mono text-[var(--text-primary)] cursor-pointer"
+                >
+                  <option value={6}>Every 6 hours</option>
+                  <option value={12}>Every 12 hours</option>
+                  <option value={24}>Every 24 hours (Default)</option>
+                  <option value={72}>Every 3 days</option>
+                  <option value={168}>Weekly (7 days)</option>
+                </select>
+              </div>
+
+              {/* Per-Source Toggles */}
+              <div className="pt-4 border-t border-[var(--border-subtle)] space-y-2.5">
+                <div className="text-xs font-medium text-[var(--text-primary)]">
+                  Sources Included in Catalog Sync
+                </div>
+                {sources.length === 0 ? (
+                  <p className="text-xs text-[var(--text-muted)]">
+                    No sources discovered yet. Sync or refresh sources in Desktop mode to configure per-source filters.
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {sources.map(src => {
+                      const activeList = settings.enabledSyncSources || [];
+                      const isEnabled =
+                        activeList.length === 0 ||
+                        activeList.some(n => n.toLowerCase() === src.name.toLowerCase());
+                      return (
+                        <label
+                          key={src.id}
+                          className="flex items-center justify-between gap-3 p-3 rounded-[8px] bg-[var(--surface-subtle)] border border-[var(--border-subtle)] cursor-pointer text-xs"
+                        >
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <input
+                              type="checkbox"
+                              checked={isEnabled}
+                              onChange={() => handleToggleSyncSource(src.name)}
+                              className="w-4 h-4 rounded accent-[var(--accent-primary)] cursor-pointer shrink-0"
+                            />
+                            <div className="min-w-0">
+                              <span className="font-semibold text-[var(--text-primary)]">
+                                {src.name}
+                              </span>
+                              <span className="ml-2 font-mono text-[11px] text-[var(--text-muted)]">
+                                {src.arg}
+                              </span>
+                            </div>
+                          </div>
+                          {src.packageCount !== undefined && (
+                            <span className="font-mono text-[11px] text-[var(--text-secondary)] shrink-0 tabular-nums">
+                              {src.packageCount} pkgs
+                            </span>
+                          )}
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className="pt-4 border-t border-[var(--border-subtle)] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <div className="text-xs font-semibold text-[var(--text-primary)]">
+                    Clear Synchronized Catalog Cache
+                  </div>
+                  <div className="text-xs text-[var(--text-secondary)] mt-0.5">
+                    Removes cached catalog packages and sync history from SQLite while preserving your favorites, collections, settings, and installation logs.
+                  </div>
+                </div>
+                <Button
+                  size="md"
+                  variant="secondary"
+                  leftIcon={<Trash2 className="w-3.5 h-3.5" />}
+                  onClick={() => setConfirmClearCacheOpen(true)}
+                >
+                  Clear Catalog Cache
+                </Button>
               </div>
             </div>
           )}
@@ -449,7 +711,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                     Clear Package &amp; Icon Cache
                   </div>
                   <div className="text-xs text-[var(--text-secondary)] mt-0.5">
-                    Invalidates cached package metadata and icons, then re-syncs from WinGet.
+                    Clears cached catalog metadata and icon URLs without touching your favorites, collections, settings, or history.
                   </div>
                 </div>
                 <Button
@@ -495,7 +757,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                     Local-First Privacy Guarantee
                   </div>
                   <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
-                    AppHub includes zero telemetry SDKs, analytics trackers, or remote accounts. All preferences, collections, and operation logs remain strictly on your device in local SQLite storage.
+                    AppHub includes zero telemetry SDKs, analytics trackers, or remote accounts. All preferences, collections, synchronized catalog records, and operation logs remain strictly on your device in local SQLite storage.
                   </p>
                 </div>
               </div>
@@ -523,7 +785,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs font-mono">
-                <div className="p-3.5 bg-[var(--surface-subtle)] rounded-[10px] border border-[var(--border-subtle)]">
+                <div className="p-4 bg-[var(--surface-subtle)] rounded-[10px] border border-[var(--border-subtle)]">
                   <div className="text-[var(--text-muted)] mb-1">WinGet CLI Status</div>
                   <StatusBadge
                     status={environment.isInstalled ? 'completed' : 'cancelled'}
@@ -532,26 +794,26 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                   />
                 </div>
 
-                <div className="p-3.5 bg-[var(--surface-subtle)] rounded-[10px] border border-[var(--border-subtle)]">
+                <div className="p-4 bg-[var(--surface-subtle)] rounded-[10px] border border-[var(--border-subtle)]">
                   <div className="text-[var(--text-muted)]">WinGet Version</div>
                   <div className="text-[var(--text-primary)] font-semibold mt-1">
                     {environment.version}
                   </div>
                 </div>
 
-                <div className="p-3.5 bg-[var(--surface-subtle)] rounded-[10px] border border-[var(--border-subtle)] sm:col-span-2">
+                <div className="p-4 bg-[var(--surface-subtle)] rounded-[10px] border border-[var(--border-subtle)] sm:col-span-2">
                   <div className="text-[var(--text-muted)]">Resolved Executable</div>
                   <div className="text-[var(--text-primary)] mt-1 truncate">
                     {environment.path || 'Not resolved'}
                   </div>
                 </div>
 
-                <div className="p-3.5 bg-[var(--surface-subtle)] rounded-[10px] border border-[var(--border-subtle)]">
+                <div className="p-4 bg-[var(--surface-subtle)] rounded-[10px] border border-[var(--border-subtle)]">
                   <div className="text-[var(--text-muted)]">Operating System</div>
                   <div className="text-[var(--text-primary)] mt-1">{environment.windowsVersion}</div>
                 </div>
 
-                <div className="p-3.5 bg-[var(--surface-subtle)] rounded-[10px] border border-[var(--border-subtle)]">
+                <div className="p-4 bg-[var(--surface-subtle)] rounded-[10px] border border-[var(--border-subtle)]">
                   <div className="text-[var(--text-muted)]">System Architecture</div>
                   <div className="text-[var(--text-primary)] uppercase mt-1">
                     {environment.architecture}
@@ -707,12 +969,19 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
         onConfirm={() => {
           onClearCache();
           setConfirmClearCacheOpen(false);
-          showToast({ title: 'Package & Icon Cache Cleared', tone: 'success' });
+          showToast({ title: 'Catalog & Icon Cache Cleared', tone: 'success' });
         }}
-        title="Clear Local Cache"
-        description="Reset cached package metadata and re-resolve icons from WinGet sources?"
+        title="Clear Catalog Cache"
+        description="Remove synchronized package records and cached icons from SQLite? Your favorites, custom collections, settings, and installation history will be preserved."
         confirmLabel="Clear Cache"
         tone="warning"
+      />
+
+      <CatalogSyncLogDialog
+        isOpen={syncLogOpen}
+        onClose={() => setSyncLogOpen(false)}
+        syncHistory={syncHistory}
+        catalogStats={catalogStats}
       />
     </div>
   );
