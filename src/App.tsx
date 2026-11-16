@@ -69,7 +69,7 @@ function AppShellContent() {
   );
 
   // Modals & Drawers
-  const [detailedPackageKey, setDetailedPackageKey] = useState<string | null>(null);
+  const [selectedDetailPackage, setSelectedDetailPackage] = useState<Package | null>(null);
   const [uacPackage, setUacPackage] = useState<{
     pkg: Package;
     action: TaskAction;
@@ -97,14 +97,32 @@ function AppShellContent() {
   const hasAutoSyncedRef = useRef(false);
   const catalogSyncInFlightRef = useRef(false);
 
-  const detailedPackage = detailedPackageKey
-    ? packages.find(p => (p.packageKey || getPackageKey(p.id, p.source)) === detailedPackageKey) ||
-      packages.find(p => p.id === detailedPackageKey) ||
-      null
-    : null;
+  const detailedPackage = React.useMemo(() => {
+    if (!selectedDetailPackage) return null;
+    const targetKey =
+      selectedDetailPackage.packageKey ||
+      getPackageKey(selectedDetailPackage.id, selectedDetailPackage.source);
+    const liveMatch =
+      packages.find(p => (p.packageKey || getPackageKey(p.id, p.source)) === targetKey) ||
+      packages.find(
+        p =>
+          p.id.toLowerCase() === selectedDetailPackage.id.toLowerCase() &&
+          (p.source || '').toLowerCase() === (selectedDetailPackage.source || '').toLowerCase()
+      );
+    if (!liveMatch) return selectedDetailPackage;
+    return {
+      ...selectedDetailPackage,
+      ...liveMatch,
+      description: liveMatch.description || selectedDetailPackage.description,
+      longDescription: liveMatch.longDescription || selectedDetailPackage.longDescription,
+      publisher: liveMatch.publisher || selectedDetailPackage.publisher,
+      homepage: liveMatch.homepage || selectedDetailPackage.homepage,
+      isFavorite: liveMatch.isFavorite ?? selectedDetailPackage.isFavorite,
+    };
+  }, [selectedDetailPackage, packages]);
 
   const openPackageDetails = useCallback((pkg: Package) => {
-    setDetailedPackageKey(pkg.packageKey || getPackageKey(pkg.id, pkg.source));
+    setSelectedDetailPackage(pkg);
   }, []);
 
   useEffect(() => {
@@ -272,31 +290,39 @@ function AppShellContent() {
   const handlePackageEnriched = useCallback(
     (pkgId: string, source: string, details: Partial<Package>) => {
       const targetKey = getPackageKey(pkgId, source);
+      const mergeDetails = (p: Package): Package => ({
+        ...p,
+        ...details,
+        homepage: details.homepage || p.homepage,
+        publisherUrl: details.publisherUrl || p.publisherUrl,
+        license: details.license || p.license,
+        releaseDate: details.releaseDate || p.releaseDate,
+        description: details.description || p.description,
+        longDescription: details.longDescription || p.longDescription,
+        tags: details.tags && details.tags.length > 0 ? details.tags : p.tags,
+        architectures:
+          details.architectures && details.architectures.length > 0
+            ? details.architectures
+            : p.architectures,
+        category:
+          details.category && details.category !== 'Uncategorized'
+            ? details.category
+            : p.category,
+      });
+
       setPackages(prev =>
         prev.map(p => {
           const key = p.packageKey || getPackageKey(p.id, p.source);
           if (key !== targetKey) return p;
-          return {
-            ...p,
-            ...details,
-            homepage: details.homepage || p.homepage,
-            publisherUrl: details.publisherUrl || p.publisherUrl,
-            license: details.license || p.license,
-            releaseDate: details.releaseDate || p.releaseDate,
-            description: details.description || p.description,
-            longDescription: details.longDescription || p.longDescription,
-            tags: details.tags && details.tags.length > 0 ? details.tags : p.tags,
-            architectures:
-              details.architectures && details.architectures.length > 0
-                ? details.architectures
-                : p.architectures,
-            category:
-              details.category && details.category !== 'Uncategorized'
-                ? details.category
-                : p.category,
-          };
+          return mergeDetails(p);
         })
       );
+
+      setSelectedDetailPackage(prev => {
+        if (!prev) return prev;
+        const key = prev.packageKey || getPackageKey(prev.id, prev.source);
+        return key === targetKey ? mergeDetails(prev) : prev;
+      });
     },
     []
   );
@@ -447,8 +473,8 @@ function AppShellContent() {
   }, []);
 
   // Global Keyboard Shortcuts
-  const shortcutRef = useRef({ quickSearchOpen, uacPackage, detailedPackageKey, terminalOpen });
-  shortcutRef.current = { quickSearchOpen, uacPackage, detailedPackageKey, terminalOpen };
+  const shortcutRef = useRef({ quickSearchOpen, uacPackage, detailedPackage, terminalOpen });
+  shortcutRef.current = { quickSearchOpen, uacPackage, detailedPackage, terminalOpen };
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -499,7 +525,7 @@ function AppShellContent() {
         const cur = shortcutRef.current;
         if (cur.quickSearchOpen) setQuickSearchOpen(false);
         else if (cur.uacPackage) setUacPackage(null);
-        else if (cur.detailedPackageKey) setDetailedPackageKey(null);
+        else if (cur.detailedPackage) setSelectedDetailPackage(null);
         else if (cur.terminalOpen) setTerminalOpen(false);
       }
     };
@@ -627,8 +653,15 @@ function AppShellContent() {
   };
 
   const handleToggleFavorite = (pkg: Package) => {
-    const updated = storage.setFavorite(pkg.id, !pkg.isFavorite);
+    const nextFavorite = !pkg.isFavorite;
+    const updated = storage.setFavorite(pkg.id, nextFavorite, pkg.source);
     setPackages(updated);
+    setSelectedDetailPackage(prev => {
+      if (!prev) return prev;
+      const targetKey = getPackageKey(pkg.id, pkg.source);
+      const prevKey = prev.packageKey || getPackageKey(prev.id, prev.source);
+      return prevKey === targetKey ? { ...prev, isFavorite: nextFavorite } : prev;
+    });
   };
 
   const handleExportManifest = () => {
@@ -928,7 +961,7 @@ function AppShellContent() {
 
       <AppDetailsModal
         pkg={detailedPackage}
-        onClose={() => setDetailedPackageKey(null)}
+        onClose={() => setSelectedDetailPackage(null)}
         onActionClick={handleActionClick}
         onToggleFavorite={handleToggleFavorite}
         onPackageEnriched={handlePackageEnriched}

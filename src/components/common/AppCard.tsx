@@ -111,13 +111,13 @@ export const AppCard: React.FC<AppCardProps> = ({
           <AppIconImage pkg={pkg} size="md" />
 
           <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-1.5">
-              <h3 className="font-semibold text-[13px] text-[var(--text-primary)] truncate group-hover:text-[var(--accent-primary)] transition-colors">
+            <div className="flex items-start gap-1.5">
+              <h3 className="font-semibold text-[13px] leading-snug text-[var(--text-primary)] line-clamp-2 break-words group-hover:text-[var(--accent-primary)] transition-colors">
                 {pkg.name}
               </h3>
               {pkg.verified && !pkg.isExternal && (
-                <span title="Verified WinGet Publisher">
-                  <ShieldCheck className="w-3.5 h-3.5 text-[var(--accent-primary)] shrink-0" />
+                <span title="Verified WinGet Publisher" className="mt-0.5 shrink-0">
+                  <ShieldCheck className="w-3.5 h-3.5 text-[var(--accent-primary)]" />
                 </span>
               )}
             </div>
@@ -147,24 +147,24 @@ export const AppCard: React.FC<AppCardProps> = ({
         </div>
 
         {/* Summary Description */}
-        <p className="text-xs text-[var(--text-secondary)] line-clamp-2 leading-relaxed mb-3 min-h-[2.4rem]">
+        <p className="text-xs text-[var(--text-secondary)] line-clamp-2 leading-relaxed mb-3 min-h-[2.25rem]">
           {pkg.description || pkg.id}
         </p>
       </div>
 
       {/* Bottom Metadata + Action Row */}
-      <div className="space-y-3">
-        <div className="flex items-center gap-1.5 text-[11px] font-mono tabular-nums text-[var(--text-muted)] truncate">
+      <div className="mt-auto space-y-3">
+        <div className="flex items-center gap-1.5 text-[11px] font-mono tabular-nums text-[var(--text-secondary)] truncate">
           <span className="truncate">{pkg.isExternal ? 'External' : pkg.category}</span>
-          <span>·</span>
+          <span className="text-[var(--text-muted)]">·</span>
           <span className="shrink-0">v{pkg.installedVersion || pkg.latestVersion}</span>
           {(pkg.isInstalled
             ? pkg.formattedInstalledSize || pkg.formattedDownloadSize || pkg.formattedSize
             : pkg.formattedDownloadSize || pkg.formattedSize) && (
             <>
-              <span>·</span>
+              <span className="text-[var(--text-muted)]">·</span>
               <span
-                className="shrink-0 text-[var(--text-secondary)]"
+                className="shrink-0 text-[var(--text-primary)]"
                 title={
                   pkg.isInstalled && pkg.formattedInstalledSize
                     ? 'Installed disk footprint'

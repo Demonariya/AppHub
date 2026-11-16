@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Package, TaskAction, PackageVersionInfo } from '../../types';
 import {
   X,
@@ -18,13 +18,19 @@ import {
   Star,
   Loader2,
   SlidersHorizontal,
+  AlertCircle,
+  RefreshCw,
 } from 'lucide-react';
 import { wingetEngine } from '../../services/wingetEngine';
 import { storage } from '../../services/storage';
 import { formatBytes } from '../../services/catalog';
 import { isTauriEnvironment } from '../../services/tauriBridge';
 import { AppIconImage } from '../common/AppIconImage';
-import { getIconDiagnostics } from '../../services/icons';
+import {
+  clearPersistentIconCache,
+  getIconDiagnostics,
+  subscribeIconCacheChanges,
+} from '../../services/icons';
 import {
   Button,
   StatusBadge,
@@ -61,6 +67,7 @@ export const AppDetailsModal: React.FC<AppDetailsModalProps> = ({
 
   const [liveMetadata, setLiveMetadata] = useState<Partial<Package> | null>(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
+  const [detailsError, setDetailsError] = useState<string | null>(null);
   const [probingSize, setProbingSize] = useState(false);
 
   const [versions, setVersions] = useState<PackageVersionInfo[]>([]);
@@ -68,16 +75,110 @@ export const AppDetailsModal: React.FC<AppDetailsModalProps> = ({
   const [rollbackTarget, setRollbackTarget] = useState<PackageVersionInfo | null>(null);
   const [backupBeforeRollback, setBackupBeforeRollback] = useState(true);
 
+  const [iconRefreshTick, setIconRefreshTick] = useState(0);
+  const [retryingIcon, setRetryingIcon] = useState(false);
+  const [iconCacheVer, setIconCacheVer] = useState(0);
+
+  const requestIdRef = useRef(0);
+
+  useEffect(() => {
+    return subscribeIconCacheChanges(() => {
+      setIconCacheVer(v => v + 1);
+    });
+  }, []);
+
+  const loadDetailsAndVersions = useCallback(
+    (targetPkg: Package) => {
+      const reqId = ++requestIdRef.current;
+      setDetailsError(null);
+      setLiveMetadata(null);
+      setProbingSize(false);
+
+      if (isTauriEnvironment() && !targetPkg.isExternal && wingetEngine.isValidPackageId(targetPkg.id)) {
+        setLoadingDetails(true);
+        wingetEngine
+          .showPackageDetails(targetPkg.id, targetPkg.source)
+          .then(details => {
+            if (requestIdRef.current !== reqId) return;
+            if (!details) {
+              setDetailsError(
+                `WinGet returned no manifest details for ${targetPkg.id}${
+                  targetPkg.source ? ` (source: ${targetPkg.source})` : ''
+                }.`
+              );
+              return;
+            }
+            setLiveMetadata(details);
+            storage.updatePackage(targetPkg.id, details, targetPkg.source);
+            onPackageEnriched?.(targetPkg.id, targetPkg.source, details);
+            if (!details.downloadSizeBytes && details.installerUrl) {
+              setProbingSize(true);
+              wingetEngine
+                .probeInstallerSize(details.installerUrl)
+                .then(bytes => {
+                  if (requestIdRef.current !== reqId || !bytes) return;
+                  const formatted = formatBytes(bytes);
+                  const sizePatch: Partial<Package> = {
+                    downloadSizeBytes: bytes,
+                    sizeBytes: bytes,
+                    formattedDownloadSize: formatted,
+                    formattedSize: formatted,
+                  };
+                  setLiveMetadata(prev => ({
+                    ...(prev || details),
+                    ...sizePatch,
+                  }));
+                  storage.updatePackage(targetPkg.id, sizePatch, targetPkg.source);
+                  onPackageEnriched?.(targetPkg.id, targetPkg.source, sizePatch);
+                })
+                .catch(() => {})
+                .finally(() => {
+                  if (requestIdRef.current === reqId) setProbingSize(false);
+                });
+            }
+          })
+          .catch((err: any) => {
+            if (requestIdRef.current !== reqId) return;
+            setDetailsError(
+              err?.message ||
+                `Failed to query live details for ${targetPkg.id}`
+            );
+          })
+          .finally(() => {
+            if (requestIdRef.current === reqId) setLoadingDetails(false);
+          });
+      } else {
+        setLoadingDetails(false);
+      }
+
+      setLoadingVersions(true);
+      wingetEngine
+        .fetchPackageVersions(targetPkg)
+        .then(res => {
+          if (requestIdRef.current !== reqId) return;
+          setVersions(res);
+          setLoadingVersions(false);
+        })
+        .catch(() => {
+          if (requestIdRef.current !== reqId) return;
+          setLoadingVersions(false);
+        });
+    },
+    [onPackageEnriched]
+  );
+
   useEffect(() => {
     if (!pkg) {
+      requestIdRef.current += 1;
       setVersions([]);
       setRollbackTarget(null);
       setLiveMetadata(null);
+      setDetailsError(null);
+      setLoadingDetails(false);
       setProbingSize(false);
       return;
     }
 
-    let cancelled = false;
     setActiveTab('overview');
     storage.recordRecentlyViewed(pkg.id);
     const settings = storage.getSettings();
@@ -91,66 +192,12 @@ export const AppDetailsModal: React.FC<AppDetailsModalProps> = ({
       setCustomLocationPath(`D:\\Software\\${pkg.name}`);
     }
 
-    setLiveMetadata(null);
-    setProbingSize(false);
-    if (isTauriEnvironment() && !pkg.isExternal && wingetEngine.isValidPackageId(pkg.id)) {
-      setLoadingDetails(true);
-      wingetEngine
-        .showPackageDetails(pkg.id, pkg.source)
-        .then(details => {
-          if (cancelled || !details) return;
-          setLiveMetadata(details);
-          storage.updatePackage(pkg.id, details, pkg.source);
-          onPackageEnriched?.(pkg.id, pkg.source, details);
-          if (!details.downloadSizeBytes && details.installerUrl) {
-            setProbingSize(true);
-            wingetEngine
-              .probeInstallerSize(details.installerUrl)
-              .then(bytes => {
-                if (cancelled || !bytes) return;
-                const formatted = formatBytes(bytes);
-                const sizePatch: Partial<Package> = {
-                  downloadSizeBytes: bytes,
-                  sizeBytes: bytes,
-                  formattedDownloadSize: formatted,
-                  formattedSize: formatted,
-                };
-                setLiveMetadata(prev => ({
-                  ...(prev || details),
-                  ...sizePatch,
-                }));
-                storage.updatePackage(pkg.id, sizePatch, pkg.source);
-                onPackageEnriched?.(pkg.id, pkg.source, sizePatch);
-              })
-              .catch(() => {})
-              .finally(() => {
-                if (!cancelled) setProbingSize(false);
-              });
-          }
-        })
-        .catch(() => {})
-        .finally(() => {
-          if (!cancelled) setLoadingDetails(false);
-        });
-    }
-
-    setLoadingVersions(true);
-    wingetEngine
-      .fetchPackageVersions(pkg)
-      .then(res => {
-        if (!cancelled) {
-          setVersions(res);
-          setLoadingVersions(false);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setLoadingVersions(false);
-      });
+    loadDetailsAndVersions(pkg);
 
     return () => {
-      cancelled = true;
+      requestIdRef.current += 1;
     };
-  }, [pkg?.id, pkg?.source, pkg?.installedVersion]);
+  }, [pkg?.id, pkg?.source, pkg?.installedVersion, loadDetailsAndVersions]);
 
   if (!pkg) return null;
 
@@ -180,7 +227,10 @@ export const AppDetailsModal: React.FC<AppDetailsModalProps> = ({
 
   const effectiveCustomLocation =
     enableCustomLocation && customLocationPath.trim() ? customLocationPath.trim() : undefined;
-  const iconDiag = getIconDiagnostics(displayPkg.id, displayPkg.source);
+  const iconDiag = React.useMemo(
+    () => getIconDiagnostics(displayPkg.id, displayPkg.source),
+    [displayPkg.id, displayPkg.source, iconCacheVer, iconRefreshTick, liveMetadata]
+  );
   const hasUpdate = Boolean(
     displayPkg.isInstalled &&
       displayPkg.installedVersion &&
@@ -188,11 +238,24 @@ export const AppDetailsModal: React.FC<AppDetailsModalProps> = ({
   );
 
   const installCli = wingetEngine.formatCliPreview(
-    wingetEngine.buildInstallArgs(displayPkg.id, {
-      silent: silentMode,
-      customLocation: effectiveCustomLocation,
-    })
+    hasUpdate
+      ? wingetEngine.buildUpgradeArgs(displayPkg.id, silentMode, true, displayPkg.source)
+      : wingetEngine.buildInstallArgs(displayPkg.id, {
+          silent: silentMode,
+          source: displayPkg.source,
+          customLocation: effectiveCustomLocation,
+        })
   );
+
+  const handleRetryIcon = async () => {
+    setRetryingIcon(true);
+    try {
+      await clearPersistentIconCache(displayPkg.id, displayPkg.source);
+      setIconRefreshTick(t => t + 1);
+    } finally {
+      setTimeout(() => setRetryingIcon(false), 350);
+    }
+  };
 
   const handleCopyId = () => {
     navigator.clipboard?.writeText(displayPkg.id);
@@ -285,10 +348,27 @@ export const AppDetailsModal: React.FC<AppDetailsModalProps> = ({
 
         {/* Scrollable Content */}
         <div className="p-5 sm:p-6 overflow-y-auto space-y-6">
+          {detailsError && (
+            <div className="p-3 rounded-[10px] bg-[var(--status-danger-bg)] border border-[var(--status-danger-border)] flex items-center justify-between gap-3 text-xs text-[var(--status-danger-fg)]">
+              <div className="flex items-center gap-2 min-w-0">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span className="truncate">{detailsError}</span>
+              </div>
+              <Button
+                size="sm"
+                variant="secondary"
+                leftIcon={<RefreshCw className="w-3.5 h-3.5" />}
+                onClick={() => loadDetailsAndVersions(displayPkg)}
+              >
+                Retry Details
+              </Button>
+            </div>
+          )}
+
           {/* Hero Summary */}
           <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-5 pb-5 border-b border-[var(--border-subtle)]">
             <div className="flex items-start gap-4 min-w-0">
-              <AppIconImage pkg={displayPkg} size="lg" />
+              <AppIconImage pkg={displayPkg} size="lg" refreshKey={iconRefreshTick} />
 
               <div className="min-w-0 space-y-1.5">
                 <div className="flex flex-wrap items-center gap-2">
@@ -430,11 +510,19 @@ export const AppDetailsModal: React.FC<AppDetailsModalProps> = ({
                   <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
                     Overview
                   </h3>
-                  <p className="text-[13px] text-[var(--text-primary)] leading-relaxed">
-                    {displayPkg.longDescription ||
-                      displayPkg.description ||
-                      'No description provided in manifest.'}
-                  </p>
+                  {loadingDetails && !displayPkg.longDescription && !displayPkg.description ? (
+                    <div className="space-y-2 animate-pulse pt-1">
+                      <div className="h-3.5 bg-[var(--surface-subtle)] rounded w-full" />
+                      <div className="h-3.5 bg-[var(--surface-subtle)] rounded w-5/6" />
+                      <div className="h-3.5 bg-[var(--surface-subtle)] rounded w-2/3" />
+                    </div>
+                  ) : (
+                    <p className="text-[13px] text-[var(--text-primary)] leading-relaxed">
+                      {displayPkg.longDescription ||
+                        displayPkg.description ||
+                        'No description provided in manifest.'}
+                    </p>
+                  )}
                 </section>
 
                 {displayPkg.releaseNotes && (
@@ -648,7 +736,7 @@ export const AppDetailsModal: React.FC<AppDetailsModalProps> = ({
                   <div className="py-2 flex items-center justify-between gap-3">
                     <dt className="text-[var(--text-secondary)]">Icon Provenance</dt>
                     <dd
-                      className="font-mono text-[var(--text-secondary)] truncate max-w-[150px]"
+                      className="font-mono text-[var(--text-secondary)] truncate max-w-[160px]"
                       title={iconDiag.notes || iconDiag.primaryUrl}
                     >
                       {iconDiag.sourceType === 'official-asset'
@@ -657,10 +745,65 @@ export const AppDetailsModal: React.FC<AppDetailsModalProps> = ({
                         ? 'Official CDN'
                         : iconDiag.sourceType === 'curated-registry'
                         ? 'Curated Asset'
-                        : 'Monogram'}
+                        : iconDiag.sourceType === 'local-app'
+                        ? 'Local App Icon'
+                        : iconDiag.sourceType === 'package-manifest'
+                        ? 'Package Manifest'
+                        : 'Placeholder Symbol'}
                     </dd>
                   </div>
                 </dl>
+
+                {/* Icon Pipeline Diagnostics & Retry */}
+                <div className="pt-2 border-t border-[var(--border-subtle)] space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                      Icon Diagnostics
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={retryingIcon}
+                      leftIcon={<RefreshCw className={`w-3 h-3 ${retryingIcon ? 'animate-spin' : ''}`} />}
+                      onClick={() => void handleRetryIcon()}
+                    >
+                      Retry Icon Lookup
+                    </Button>
+                  </div>
+                  <div className="text-[11px] font-mono bg-[var(--surface-input)] p-2.5 rounded-[8px] border border-[var(--border-subtle)] space-y-1 text-[var(--text-secondary)]">
+                    <div className="flex justify-between gap-2">
+                      <span className="text-[var(--text-muted)]">Status</span>
+                      <span className="text-[var(--text-primary)]">
+                        {iconDiag.validationStatus}
+                        {iconDiag.cacheHit ? ' (cache)' : ''}
+                        {iconDiag.httpStatus ? ` · HTTP ${iconDiag.httpStatus}` : ''}
+                      </span>
+                    </div>
+                    {(iconDiag.mimeType || (iconDiag.width && iconDiag.height)) && (
+                      <div className="flex justify-between gap-2">
+                        <span className="text-[var(--text-muted)]">Format</span>
+                        <span>
+                          {iconDiag.mimeType || 'image'}
+                          {iconDiag.width && iconDiag.height ? ` (${iconDiag.width}×${iconDiag.height})` : ''}
+                        </span>
+                      </div>
+                    )}
+                    {iconDiag.candidatesTried && iconDiag.candidatesTried.length > 0 && (
+                      <div className="flex justify-between gap-2">
+                        <span className="text-[var(--text-muted)]">Probed URLs</span>
+                        <span>{iconDiag.candidatesTried.length}</span>
+                      </div>
+                    )}
+                    <div className="text-[10px] text-[var(--text-muted)] break-all pt-1 border-t border-[var(--border-subtle)]">
+                      {iconDiag.primaryUrl}
+                    </div>
+                    {iconDiag.notes && (
+                      <div className="text-[10px] text-[var(--text-secondary)] break-words">
+                        {iconDiag.notes}
+                      </div>
+                    )}
+                  </div>
+                </div>
 
                 {displayPkg.sha256 && (
                   <div className="pt-2 border-t border-[var(--border-subtle)]">
@@ -684,7 +827,11 @@ export const AppDetailsModal: React.FC<AppDetailsModalProps> = ({
                   <History className="w-4 h-4 text-[var(--accent-primary)]" />
                   <span>Release History</span>
                   <span className="text-xs font-mono text-[var(--text-muted)]">
-                    (winget show --id {displayPkg.id} --versions)
+                    (winget show --id {displayPkg.id}
+                    {displayPkg.source && displayPkg.source !== 'external' && displayPkg.source !== 'custom'
+                      ? ` --source ${displayPkg.source}`
+                      : ''}{' '}
+                    --versions)
                   </span>
                 </h3>
                 <p className="text-xs text-[var(--text-secondary)] mt-0.5">

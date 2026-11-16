@@ -70,6 +70,25 @@ export const EMPTY_CATALOG_STATS: CatalogCacheStats = {
   dbSizeBytes: 0,
 };
 
+function toFavoriteKey(packageId: string, source?: string): string {
+  const cleanId = (packageId || '').trim().toLowerCase();
+  const cleanSrc = (source || '').trim().toLowerCase();
+  if (cleanSrc && cleanSrc !== 'external' && cleanSrc !== 'all') {
+    return `${cleanSrc}::${cleanId}`;
+  }
+  return cleanId;
+}
+
+function isFavoriteMatch(favSet: Set<string>, packageId: string, source?: string): boolean {
+  const cleanId = (packageId || '').trim().toLowerCase();
+  if (!cleanId) return false;
+  if (favSet.has(cleanId)) return true;
+  if (source) {
+    return favSet.has(toFavoriteKey(packageId, source));
+  }
+  return false;
+}
+
 function mapNativePackageToFrontend(raw: any, favSet: Set<string>): Package {
   const tags: string[] = Array.isArray(raw.tags) ? raw.tags : [];
   const description: string | undefined = raw.description || undefined;
@@ -121,12 +140,15 @@ function mapNativePackageToFrontend(raw: any, favSet: Set<string>): Package {
     isInstalled: Boolean(raw.is_installed),
     installedVersion: raw.installed_version || undefined,
     isPinned: Boolean(raw.is_pinned),
-    isFavorite: favSet.has(id.toLowerCase()),
+    isFavorite: isFavoriteMatch(favSet, id, source),
   });
 }
 
+const MAX_LOCALSTORAGE_PACKAGES_BYTES = 2_500_000;
+
 class StorageService {
   private memoryFallback: Map<string, string> = new Map();
+  private memoryPackages: Package[] | null = null;
 
   private isLocalStorageAvailable(): boolean {
     return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
@@ -136,11 +158,10 @@ class StorageService {
     try {
       if (this.isLocalStorageAvailable()) {
         const data = window.localStorage.getItem(key);
-        return data ? JSON.parse(data) : fallback;
-      } else {
-        const mem = this.memoryFallback.get(key);
-        return mem ? JSON.parse(mem) : fallback;
+        if (data) return JSON.parse(data);
       }
+      const mem = this.memoryFallback.get(key);
+      return mem ? JSON.parse(mem) : fallback;
     } catch {
       return fallback;
     }
@@ -149,13 +170,15 @@ class StorageService {
   private set<T>(key: string, value: T): void {
     try {
       const serialized = JSON.stringify(value);
+      this.memoryFallback.set(key, serialized);
       if (this.isLocalStorageAvailable()) {
         window.localStorage.setItem(key, serialized);
-      } else {
-        this.memoryFallback.set(key, serialized);
       }
     } catch (e) {
-      console.error(`Storage error saving ${key}:`, e);
+      // Preserve in-memory copy when browser localStorage hits quota limits
+      if (key !== PACKAGES_KEY) {
+        console.warn(`Storage quota fallback to memory for ${key}:`, e);
+      }
     }
   }
 
@@ -253,7 +276,7 @@ class StorageService {
             id: r.id,
             packageId: r.package_id,
             packageName: r.package_name,
-            source: local?.source,
+            source: r.source || local?.source || undefined,
             action: (r.action || 'install') as InstallationTask['action'],
             version: r.version,
             targetVersion: local?.targetVersion || r.version,
@@ -458,12 +481,29 @@ class StorageService {
     return this.get<string[]>(FAVORITES_KEY, []);
   }
 
-  public setFavorite(packageId: string, isFavorite: boolean): Package[] {
+  public setFavorite(packageId: string, isFavorite: boolean, source?: string): Package[] {
     const favs = this.getFavoriteIds();
-    const lowerTarget = packageId.toLowerCase();
-    const nextFavs = favs.filter(id => id.toLowerCase() !== lowerTarget);
+    const cleanId = packageId.trim();
+    const lowerId = cleanId.toLowerCase();
+    const cleanSrc = (source || '').trim().toLowerCase();
+    const scopedLower = source ? toFavoriteKey(cleanId, cleanSrc) : lowerId;
+    const storedEntry =
+      cleanSrc && cleanSrc !== 'external' && cleanSrc !== 'all'
+        ? `${cleanSrc}::${cleanId}`
+        : cleanId;
+
+    const nextFavs = favs.filter(entry => {
+      const lowerEntry = entry.toLowerCase();
+      if (lowerEntry === scopedLower) return false;
+      // Also clear legacy unscoped ID entry when un-favoriting a sourced package
+      if (!isFavorite && lowerEntry === lowerId) return false;
+      // If source omitted, clear both unscoped and any source-scoped entries for that packageId
+      if (!source && lowerEntry.endsWith(`::${lowerId}`)) return false;
+      return true;
+    });
+
     if (isFavorite) {
-      nextFavs.unshift(packageId);
+      nextFavs.unshift(storedEntry);
     }
     this.set(FAVORITES_KEY, nextFavs);
 
@@ -471,34 +511,66 @@ class StorageService {
       tryInvokeCommand('db_set_favorite', {
         packageId,
         isFav: isFavorite,
+        source: source && source !== 'external' ? source : null,
       }).catch(() => {});
     }
 
-    const updated = this.getPackages().map(p =>
-      p.id.toLowerCase() === lowerTarget ? { ...p, isFavorite } : p
-    );
+    const updated = this.getPackages().map(p => {
+      if (p.id.toLowerCase() !== lowerId) return p;
+      if (source && (p.source || '').toLowerCase() !== source.toLowerCase()) {
+        return p;
+      }
+      return { ...p, isFavorite };
+    });
     this.savePackages(updated);
     return updated;
   }
 
   public getPackages(): Package[] {
     this.migrateLegacyStaticCatalogIfNeeded();
-    const saved = this.get<Package[] | null>(PACKAGES_KEY, null);
-    if (!saved || saved.length === 0) {
+    const sourceList =
+      this.memoryPackages !== null
+        ? this.memoryPackages
+        : this.get<Package[] | null>(PACKAGES_KEY, null);
+    if (!sourceList || sourceList.length === 0) {
       return [];
     }
+    if (this.memoryPackages === null) {
+      this.memoryPackages = sourceList;
+    }
     const favSet = new Set(this.getFavoriteIds().map(id => id.toLowerCase()));
-    return saved
+    return sourceList
       .filter(p => p.isAvailable !== false)
       .map(p => ({
         ...normalizePackageStorage(p),
-        isFavorite: p.isFavorite || favSet.has(p.id.toLowerCase()),
+        isFavorite: p.isFavorite || isFavoriteMatch(favSet, p.id, p.source),
       }));
   }
 
   public savePackages(packages: Package[]): void {
+    this.memoryPackages = packages;
     this.set(LEGACY_MIGRATED_KEY, true);
-    this.set(PACKAGES_KEY, packages);
+
+    try {
+      const serialized = JSON.stringify(packages);
+      if (serialized.length <= MAX_LOCALSTORAGE_PACKAGES_BYTES) {
+        if (this.isLocalStorageAvailable()) {
+          window.localStorage.setItem(PACKAGES_KEY, serialized);
+        } else {
+          this.memoryFallback.set(PACKAGES_KEY, serialized);
+        }
+      } else {
+        // Large 16k+ WinGet catalogs live in SQLite (Tauri) + in-memory cache; avoid QuotaExceededError
+        this.memoryFallback.delete(PACKAGES_KEY);
+        if (this.isLocalStorageAvailable()) {
+          window.localStorage.removeItem(PACKAGES_KEY);
+        }
+      }
+    } catch {
+      if (this.isLocalStorageAvailable()) {
+        window.localStorage.removeItem(PACKAGES_KEY);
+      }
+    }
   }
 
   public updatePackage(
@@ -591,7 +663,7 @@ class StorageService {
           verified: rec.verified,
           isAvailable: true,
           lastObservedAt: observedAt,
-          isFavorite: prev.isFavorite || favSet.has(rec.id.toLowerCase()),
+          isFavorite: prev.isFavorite || isFavoriteMatch(favSet, rec.id, normalizedSource),
         });
         byKey.set(key, merged);
         if (versionOrNameChanged) updated += 1;
@@ -605,7 +677,7 @@ class StorageService {
             packageKey: key,
             isAvailable: true,
             lastObservedAt: observedAt,
-            isFavorite: favSet.has(rec.id.toLowerCase()),
+            isFavorite: isFavoriteMatch(favSet, rec.id, normalizedSource),
           })
         );
         inserted += 1;
@@ -669,6 +741,7 @@ class StorageService {
    * Never clears user favorites, collections, settings, or history.
    */
   public async clearCatalogCache(): Promise<Package[]> {
+    this.memoryPackages = null;
     this.remove(PACKAGES_KEY);
     this.remove(CATALOG_STATS_KEY);
     this.remove(SYNC_HISTORY_KEY);
@@ -681,6 +754,7 @@ class StorageService {
   }
 
   public clearPackageCache(): Package[] {
+    this.memoryPackages = null;
     this.remove(PACKAGES_KEY);
     this.remove(CATALOG_STATS_KEY);
     this.set(LEGACY_MIGRATED_KEY, true);
@@ -718,13 +792,14 @@ class StorageService {
 
     for (const p of existing) {
       const key = getPackageKey(p.id, p.source);
+      const isExt = p.source === 'external';
       catalogByKey.set(key, {
         ...p,
         isInstalled: false,
         installedVersion: undefined,
-        isExternal: p.source === 'external',
+        isExternal: isExt,
       });
-      if (!firstKeyById.has(p.id.toLowerCase())) {
+      if (!isExt && !firstKeyById.has(p.id.toLowerCase())) {
         firstKeyById.set(p.id.toLowerCase(), key);
       }
     }
@@ -765,7 +840,7 @@ class StorageService {
             installedVersion: app.version,
             latestVersion: latestVer || match.latestVersion,
             isExternal,
-            isFavorite: match.isFavorite || favSet.has(match.id.toLowerCase()),
+            isFavorite: match.isFavorite || isFavoriteMatch(favSet, match.id, match.source),
             installedSizeBytes: liveInstalledSize ?? match.installedSizeBytes,
           })
         );
@@ -796,11 +871,11 @@ class StorageService {
             isInstalled: true,
             installedVersion: app.version,
             isExternal,
-            isFavorite: favSet.has(app.id.toLowerCase()),
+            isFavorite: isFavoriteMatch(favSet, app.id, appSource),
             installedSizeBytes: liveInstalledSize,
           })
         );
-        if (!firstKeyById.has(app.id.toLowerCase())) {
+        if (!isExternal && !firstKeyById.has(app.id.toLowerCase())) {
           firstKeyById.set(app.id.toLowerCase(), exactKey);
         }
       }
@@ -909,6 +984,7 @@ class StorageService {
           queued_at: task.queuedAt ?? task.startTime,
           started_at: task.startedAt ?? null,
           ended_at: task.endedAt ?? task.endTime ?? null,
+          source: task.source || null,
         },
       }).catch(() => {});
     }
@@ -1002,6 +1078,7 @@ class StorageService {
   }
 
   public resetAllToDefaults(): void {
+    this.memoryPackages = null;
     this.remove(SETTINGS_KEY);
     this.remove(PACKAGES_KEY);
     this.remove(COLLECTIONS_KEY);

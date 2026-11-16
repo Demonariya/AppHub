@@ -186,8 +186,19 @@ export const DiscoverPage: React.FC<DiscoverPageProps> = ({
     return combined;
   }, [packages, remoteResults, query]);
 
+  const nonExternalCatalogCount = useMemo(
+    () => packages.filter(p => !p.isExternal).length,
+    [packages]
+  );
+
   const filtered = useMemo(() => {
     let result = [...mergedCatalog];
+
+    if (selectedSource === 'all') {
+      result = result.filter(p => !p.isExternal);
+    } else {
+      result = result.filter(p => p.source.toLowerCase() === selectedSource.toLowerCase());
+    }
 
     if (query.trim() && !remoteResults) {
       const q = query.toLowerCase().trim();
@@ -203,10 +214,6 @@ export const DiscoverPage: React.FC<DiscoverPageProps> = ({
 
     if (selectedCategory !== 'All') {
       result = result.filter(p => p.category === selectedCategory);
-    }
-
-    if (selectedSource !== 'all') {
-      result = result.filter(p => p.source.toLowerCase() === selectedSource.toLowerCase());
     }
 
     if (selectedArch !== 'all') {
@@ -252,6 +259,8 @@ export const DiscoverPage: React.FC<DiscoverPageProps> = ({
     () => filtered.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage),
     [filtered, currentPage]
   );
+  const startRange = filtered.length === 0 ? 0 : (currentPage - 1) * itemsPerPage + 1;
+  const endRange = Math.min(filtered.length, currentPage * itemsPerPage);
 
   // Lazy bounded-concurrency `winget show` enrichment for currently visible summary cards
   useEffect(() => {
@@ -511,12 +520,12 @@ export const DiscoverPage: React.FC<DiscoverPageProps> = ({
       )}
 
       {/* Results Count */}
-      <div className="flex items-center justify-between text-xs text-[var(--text-muted)] font-mono tabular-nums pb-2 border-b border-[var(--border-subtle)]">
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--text-secondary)] font-mono tabular-nums pb-2 border-b border-[var(--border-subtle)]">
         <span>
-          Showing {paginated.length} of {filtered.length} packages
+          Showing {startRange}–{endRange} of {filtered.length} matching · {nonExternalCatalogCount} catalog packages
           {remoteResults !== null && ' (includes live WinGet results)'}
         </span>
-        <span>
+        <span className="text-[var(--text-muted)]">
           Page {currentPage} of {totalPages}
         </span>
       </div>
@@ -526,7 +535,7 @@ export const DiscoverPage: React.FC<DiscoverPageProps> = ({
         <SkeletonGrid count={8} />
       ) : paginated.length > 0 ? (
         viewMode === 'grid' ? (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(272px,1fr))] gap-4">
             {paginated.map(pkg => (
               <AppCard
                 key={pkg.packageKey || `${pkg.source}::${pkg.id}`}

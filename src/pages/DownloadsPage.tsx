@@ -57,16 +57,25 @@ export const DownloadsPage: React.FC<DownloadsPageProps> = ({
   const runningTasks =
     activeTasks && activeTasks.length > 0 ? activeTasks : activeTask ? [activeTask] : [];
 
-  const packageById = useMemo(() => {
-    const map = new Map<string, Package>();
+  const { packageByKey, packageById } = useMemo(() => {
+    const byKey = new Map<string, Package>();
+    const byId = new Map<string, Package>();
     for (const p of packages) {
-      map.set(p.id.toLowerCase(), p);
+      byKey.set(getPackageKey(p.id, p.source), p);
+      const idKey = p.id.toLowerCase();
+      const existing = byId.get(idKey);
+      if (!existing || (existing.isExternal && !p.isExternal)) {
+        byId.set(idKey, p);
+      }
     }
-    return map;
+    return { packageByKey: byKey, packageById: byId };
   }, [packages]);
 
   const resolveTaskPkg = (task: InstallationTask): Package => {
-    const known = packageById.get(task.packageId.toLowerCase());
+    const known =
+      (task.source && packageByKey.get(getPackageKey(task.packageId, task.source))) ||
+      packageByKey.get(getPackageKey(task.packageId, 'winget')) ||
+      packageById.get(task.packageId.toLowerCase());
     if (known) return known;
     return {
       id: task.packageId,
@@ -240,6 +249,12 @@ export const DownloadsPage: React.FC<DownloadsPageProps> = ({
 
                         <div className="text-[11px] font-mono text-[var(--text-secondary)] flex flex-wrap items-center gap-x-1.5 gap-y-0.5 mt-1 tabular-nums">
                           <span>{task.packageId}</span>
+                          {task.source && task.source !== 'external' && (
+                            <>
+                              <span className="text-[var(--text-muted)]">·</span>
+                              <span>{task.source}</span>
+                            </>
+                          )}
                           {queuedAt && (
                             <>
                               <span className="text-[var(--text-muted)]">·</span>

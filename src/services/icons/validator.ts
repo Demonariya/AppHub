@@ -61,6 +61,12 @@ export function isValidIconUrl(url: string | undefined | null): boolean {
   }
 }
 
+const TRUSTED_MS_STORE_CDN_HOSTS = [
+  'store-images.s-microsoft.com',
+  'img-prod-cms-rt-microsoft-com.akamaized.net',
+  'store-images.microsoft.com',
+];
+
 /**
  * Checks whether a given URL is a prohibited generic favicon fallback
  * or personal avatar unrelated to official product branding.
@@ -74,6 +80,15 @@ export function isGenericFaviconLeak(url: string, packageId: string): boolean {
     if (lowerUrl.includes(portalFavicon)) {
       return true;
     }
+  }
+
+  try {
+    const host = new URL(lowerUrl).hostname;
+    if (TRUSTED_MS_STORE_CDN_HOSTS.some(allowed => host === allowed || host.endsWith(`.${allowed}`))) {
+      return false;
+    }
+  } catch {
+    // Non-URL string such as data: URI proceeds normally
   }
 
   // If URL targets microsoft.com portal but the package is NOT a Microsoft package

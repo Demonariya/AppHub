@@ -847,6 +847,7 @@ pub async fn winget_show(
 #[tauri::command]
 pub async fn winget_show_versions(
     package_id: String,
+    source: Option<String>,
     winget_path: Option<String>,
     db: State<'_, DatabaseManager>,
 ) -> Result<Vec<String>, AppHubError> {
@@ -854,13 +855,21 @@ pub async fn winget_show_versions(
         return Err(AppHubError::InvalidPackageId(package_id));
     }
 
+    let mut args = vec!["show", "--id", package_id.as_str(), "--exact", "--versions"];
+    let src_clean = source
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "external" && *s != "custom" && validate_flag_argument(s));
+    if let Some(src) = src_clean {
+        args.push("--source");
+        args.push(src);
+    }
+
     let resolved = resolve_configured_winget_path(winget_path, &db);
-    let output = WinGetExecutor::execute_readonly(
-        &["show", "--id", &package_id, "--exact", "--versions"],
-        resolved.as_deref(),
-        30,
-    )
-    .await?;
+    if supports_disable_interactivity(resolved.as_deref()) {
+        args.push("--disable-interactivity");
+    }
+    let output = WinGetExecutor::execute_readonly(&args, resolved.as_deref(), 30).await?;
     if output.success {
         Ok(parse_versions_output(&output.stdout))
     } else {
@@ -875,6 +884,7 @@ pub async fn winget_show_versions(
 pub async fn winget_install(
     app: AppHandle,
     package_id: String,
+    source: Option<String>,
     silent: bool,
     force: bool,
     version: Option<String>,
@@ -891,6 +901,14 @@ pub async fn winget_install(
     }
 
     let mut args = vec!["install", "--id", package_id.as_str(), "--exact"];
+    let src_clean = source
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "external" && *s != "custom" && validate_flag_argument(s));
+    if let Some(src) = src_clean {
+        args.push("--source");
+        args.push(src);
+    }
     if silent {
         args.push("--silent");
     }
@@ -931,10 +949,11 @@ pub async fn winget_install(
         args.push("--disable-interactivity");
     }
     let tid = task_id.unwrap_or_else(|| format!("install_{}", package_id));
+    let lock_key = OperationManager::build_lock_key(&package_id, src_clean);
     WinGetExecutor::execute_streaming(
         &app,
         &tid,
-        Some(&package_id),
+        Some(&lock_key),
         &args,
         resolved.as_deref(),
         &ops,
@@ -946,6 +965,7 @@ pub async fn winget_install(
 pub async fn winget_uninstall(
     app: AppHandle,
     package_id: String,
+    source: Option<String>,
     silent: bool,
     task_id: Option<String>,
     winget_path: Option<String>,
@@ -957,6 +977,14 @@ pub async fn winget_uninstall(
     }
 
     let mut args = vec!["uninstall", "--id", package_id.as_str(), "--exact"];
+    let src_clean = source
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "external" && *s != "custom" && validate_flag_argument(s));
+    if let Some(src) = src_clean {
+        args.push("--source");
+        args.push(src);
+    }
     if silent {
         args.push("--silent");
     }
@@ -966,10 +994,11 @@ pub async fn winget_uninstall(
         args.push("--disable-interactivity");
     }
     let tid = task_id.unwrap_or_else(|| format!("uninstall_{}", package_id));
+    let lock_key = OperationManager::build_lock_key(&package_id, src_clean);
     WinGetExecutor::execute_streaming(
         &app,
         &tid,
-        Some(&package_id),
+        Some(&lock_key),
         &args,
         resolved.as_deref(),
         &ops,
@@ -981,6 +1010,7 @@ pub async fn winget_uninstall(
 pub async fn winget_upgrade(
     app: AppHandle,
     package_id: String,
+    source: Option<String>,
     silent: bool,
     accept_agreements: Option<bool>,
     task_id: Option<String>,
@@ -993,6 +1023,14 @@ pub async fn winget_upgrade(
     }
 
     let mut args = vec!["upgrade", "--id", package_id.as_str(), "--exact"];
+    let src_clean = source
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "external" && *s != "custom" && validate_flag_argument(s));
+    if let Some(src) = src_clean {
+        args.push("--source");
+        args.push(src);
+    }
     if accept_agreements.unwrap_or(true) {
         args.push("--accept-package-agreements");
         args.push("--accept-source-agreements");
@@ -1006,10 +1044,11 @@ pub async fn winget_upgrade(
         args.push("--disable-interactivity");
     }
     let tid = task_id.unwrap_or_else(|| format!("upgrade_{}", package_id));
+    let lock_key = OperationManager::build_lock_key(&package_id, src_clean);
     WinGetExecutor::execute_streaming(
         &app,
         &tid,
-        Some(&package_id),
+        Some(&lock_key),
         &args,
         resolved.as_deref(),
         &ops,
@@ -1251,9 +1290,10 @@ pub async fn db_get_favorites(
 pub async fn db_set_favorite(
     package_id: String,
     is_fav: bool,
+    source: Option<String>,
     db: State<'_, DatabaseManager>,
 ) -> Result<(), AppHubError> {
-    db.set_favorite(&package_id, is_fav)
+    db.set_favorite_with_source(&package_id, source.as_deref(), is_fav)
 }
 
 #[tauri::command]
@@ -1283,6 +1323,7 @@ pub async fn db_add_history(
         record.queued_at,
         record.started_at,
         record.ended_at,
+        record.source.as_deref(),
     )
 }
 
@@ -1317,12 +1358,17 @@ pub async fn db_delete_collection(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn resolve_and_cache_icon(
     package_id: String,
     source: Option<String>,
     source_type: String,
     candidate_urls: Vec<String>,
     force_refresh: Option<bool>,
+    homepage: Option<String>,
+    publisher_url: Option<String>,
+    package_name: Option<String>,
+    is_external: Option<bool>,
     db: State<'_, DatabaseManager>,
 ) -> Result<IconResolveResponse, AppHubError> {
     let cache_dir = get_icons_cache_dir();
@@ -1334,6 +1380,10 @@ pub async fn resolve_and_cache_icon(
         &source_type,
         &candidate_urls,
         force_refresh.unwrap_or(false),
+        homepage.as_deref(),
+        publisher_url.as_deref(),
+        package_name.as_deref(),
+        is_external,
     )
     .await
 }

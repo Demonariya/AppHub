@@ -83,7 +83,11 @@ function buildNeutralPlaceholder(
   pkg: Package,
   status: 'pending' | 'failed',
   notes: string,
-  primaryUrl = 'data:image/svg+xml (neutral monogram)'
+  primaryUrl = 'data:image/svg+xml (neutral application symbol)',
+  extra: {
+    candidatesTried?: string[];
+    httpStatus?: number;
+  } = {}
 ): ResolvedIcon {
   const placeholderUri = generateNeutralMonogramUri({
     name: pkg.name,
@@ -99,12 +103,16 @@ function buildNeutralPlaceholder(
     sourceType: 'neutral-placeholder',
     fallbackSrc: undefined,
     verified: false,
+    mimeType: 'image/svg+xml',
     altText: `${pkg.name} ${status === 'failed' ? 'placeholder' : 'icon'}`,
     diagnostic: {
       packageId: pkg.id,
       source: pkg.source,
       sourceType: 'neutral-placeholder',
       primaryUrl,
+      candidatesTried: extra.candidatesTried,
+      httpStatus: extra.httpStatus,
+      mimeType: 'image/svg+xml',
       resolvedAt: Date.now(),
       verified: false,
       validationStatus: status,
@@ -113,11 +121,25 @@ function buildNeutralPlaceholder(
   };
 }
 
+function mapNativeSourceType(rawSourceType?: string, fallback: IconSourceType = 'package-manifest'): IconSourceType {
+  if (
+    rawSourceType === 'official-asset' ||
+    rawSourceType === 'official-cdn' ||
+    rawSourceType === 'package-manifest' ||
+    rawSourceType === 'curated-registry' ||
+    rawSourceType === 'local-app' ||
+    rawSourceType === 'neutral-placeholder'
+  ) {
+    return rawSourceType;
+  }
+  return fallback;
+}
+
 /**
  * Synchronous fast-path for instant rendering:
  * - Returns bundled official inline SVG assets immediately (`verified: true`)
  * - Returns verified cached entries (with cacheHit metadata) immediately
- * - Otherwise returns an honest pending neutral placeholder without pretending unverified remote URLs succeeded
+ * - Returns pending neutral placeholder so Tauri native dynamic discovery or browser validation runs
  */
 export function resolveAppIcon(pkg: Package): ResolvedIcon {
   const packageId = pkg.id || '';
@@ -143,6 +165,9 @@ export function resolveAppIcon(pkg: Package): ResolvedIcon {
         sourceType: 'official-asset',
         primaryUrl: 'data:image/svg+xml (bundled official asset)',
         fallbackUrl: record.url,
+        mimeType: 'image/svg+xml',
+        width: 100,
+        height: 100,
         resolvedAt: now,
         verified: true,
         validationStatus: 'verified',
@@ -163,21 +188,30 @@ export function resolveAppIcon(pkg: Package): ResolvedIcon {
       pkg,
       'pending',
       `Awaiting verification for ${candidates[0].url}`,
-      candidates[0].url
+      candidates[0].url,
+      { candidatesTried: candidates.map(c => c.url) }
+    );
+  }
+
+  if (isTauriEnvironment()) {
+    return buildNeutralPlaceholder(
+      pkg,
+      'pending',
+      'Awaiting dynamic WinGet manifest, Store catalog, or local Windows icon discovery.'
     );
   }
 
   return buildNeutralPlaceholder(
     pkg,
     'failed',
-    'No verified icon candidate available; using neutral category monogram.'
+    'No verified icon candidate available; using neutral application symbol.'
   );
 }
 
 /**
  * Asynchronously resolves, verifies, and persists application icons.
  * Deduplicates concurrent callers, enforces bounded concurrency (max 6),
- * uses native Rust AppData + SQLite binary caching in Tauri desktop mode,
+ * uses native Rust AppData + SQLite binary caching + dynamic Store/YAML/HTML/EXE discovery in Tauri mode,
  * and falls back cleanly on error without poisoning caches.
  */
 export async function resolveAppIconAsync(
@@ -204,7 +238,8 @@ export async function resolveAppIconAsync(
     }
   }
 
-  if (candidates.length === 0) {
+  const canUseNativeDiscovery = isTauriEnvironment() && !options.validator;
+  if (candidates.length === 0 && !canUseNativeDiscovery) {
     return buildNeutralPlaceholder(
       pkg,
       'failed',
@@ -212,7 +247,9 @@ export async function resolveAppIconAsync(
     );
   }
 
-  const requestKey = `${(pkg.source || 'winget').toLowerCase()}::${packageId.toLowerCase()}::${fingerprint}`;
+  const requestKey = `${(pkg.source || 'winget').toLowerCase()}::${packageId.toLowerCase()}::${fingerprint}::${
+    pkg.homepage || ''
+  }`;
   const existingInFlight = !options.forceRefresh ? inFlightRequests.get(requestKey) : undefined;
   if (existingInFlight) {
     return existingInFlight;
@@ -225,8 +262,9 @@ export async function resolveAppIconAsync(
         return buildNeutralPlaceholder(pkg, 'pending', 'Icon request cancelled');
       }
 
-      // Desktop Tauri path: native curl download, magic-byte + HTML/XSS validation, disk + SQLite icon_cache
-      if (isTauriEnvironment() && !options.validator) {
+      // Desktop Tauri path: native curl download, dynamic Store/YAML/homepage/Windows extraction,
+      // magic-byte + HTML/XSS validation, disk + SQLite icon_cache
+      if (canUseNativeDiscovery) {
         try {
           const nativeRes = await invokeCommand<{
             cache_key: string;
@@ -245,22 +283,39 @@ export async function resolveAppIconAsync(
             expires_at: number;
             verified: boolean;
             from_cache: boolean;
+            candidates_tried?: string[];
+            http_status?: number;
           }>('resolve_and_cache_icon', {
             packageId,
             source: pkg.source || 'winget',
-            sourceType: candidates[0].sourceType,
+            sourceType:
+              candidates[0]?.sourceType ||
+              (pkg.isExternal ? 'local-app' : 'package-manifest'),
             candidateUrls: candidates.map(c => c.url),
             forceRefresh: Boolean(options.forceRefresh),
+            homepage: pkg.homepage || null,
+            publisherUrl: pkg.publisherUrl || null,
+            packageName: pkg.name || null,
+            isExternal: Boolean(pkg.isExternal),
           });
+
+          const tried =
+            Array.isArray(nativeRes.candidates_tried) && nativeRes.candidates_tried.length > 0
+              ? nativeRes.candidates_tried
+              : candidates.map(c => c.url);
 
           if (nativeRes.verified && nativeRes.data_uri) {
             const matchedCandidate = candidates.find(c => c.url === nativeRes.resolved_url);
+            const resolvedSourceType = mapNativeSourceType(
+              nativeRes.source_type,
+              matchedCandidate?.sourceType || 'package-manifest'
+            );
             const verifiedIcon: ResolvedIcon = {
               packageId,
               source: pkg.source,
               src: nativeRes.data_uri,
               isSvg: nativeRes.mime_type === 'image/svg+xml',
-              sourceType: matchedCandidate?.sourceType || candidates[0].sourceType,
+              sourceType: resolvedSourceType,
               verified: true,
               width: nativeRes.width,
               height: nativeRes.height,
@@ -270,15 +325,22 @@ export async function resolveAppIconAsync(
               diagnostic: {
                 packageId,
                 source: pkg.source,
-                sourceType: matchedCandidate?.sourceType || candidates[0].sourceType,
-                primaryUrl: nativeRes.resolved_url || candidates[0].url,
+                sourceType: resolvedSourceType,
+                primaryUrl: nativeRes.resolved_url || candidates[0]?.url || 'local-extraction',
+                candidatesTried: tried,
+                httpStatus: nativeRes.http_status,
+                mimeType: nativeRes.mime_type,
+                width: nativeRes.width,
+                height: nativeRes.height,
                 cacheHit: nativeRes.from_cache,
                 resolvedAt: nativeRes.fetched_at || Date.now(),
                 verified: true,
                 validationStatus: 'verified',
                 notes: nativeRes.from_cache
                   ? 'Loaded verified binary from AppData SQLite icon cache.'
-                  : 'Downloaded, magic-byte validated, and cached locally.',
+                  : resolvedSourceType === 'local-app'
+                  ? 'Extracted application icon directly from local Windows installation.'
+                  : 'Discovered, magic-byte validated, and cached locally.',
               },
             };
             setCachedIcon(packageId, verifiedIcon, {
@@ -292,8 +354,12 @@ export async function resolveAppIconAsync(
           const failedIcon = buildNeutralPlaceholder(
             pkg,
             'failed',
-            nativeRes.error_message || 'Native icon validation failed',
-            nativeRes.resolved_url || candidates[0].url
+            nativeRes.error_message || 'Native icon discovery and validation found no authentic icon.',
+            nativeRes.resolved_url || candidates[0]?.url || 'none',
+            {
+              candidatesTried: tried,
+              httpStatus: nativeRes.http_status,
+            }
           );
           setCachedIcon(packageId, failedIcon, {
             source: pkg.source,
@@ -302,13 +368,23 @@ export async function resolveAppIconAsync(
           });
           return failedIcon;
         } catch (err: any) {
-          // Fall through to browser validator if native command fails unexpectedly
+          // If no static candidates exist, report failure honestly without falling through cleanly to nothing
+          if (candidates.length === 0) {
+            const failedNative = buildNeutralPlaceholder(
+              pkg,
+              'failed',
+              err?.message || 'Native icon discovery failed',
+              'none'
+            );
+            return failedNative;
+          }
           console.warn(`[IconPipeline] Native resolve failed for ${packageId}:`, err);
         }
       }
 
       // Browser / Test runtime path: try candidates in strict priority order
       const validator = options.validator || validateImageAvailability;
+      const triedUrls = candidates.map(c => c.url);
       let lastError = 'All icon candidates failed validation';
 
       for (const candidate of candidates) {
@@ -333,6 +409,10 @@ export async function resolveAppIconAsync(
               source: pkg.source,
               sourceType: candidate.sourceType,
               primaryUrl: candidate.url,
+              candidatesTried: triedUrls,
+              mimeType: check.mimeType,
+              width: check.width,
+              height: check.height,
               resolvedAt: Date.now(),
               verified: true,
               validationStatus: 'verified',
@@ -353,7 +433,8 @@ export async function resolveAppIconAsync(
         pkg,
         'failed',
         lastError,
-        candidates[0].url
+        candidates[0]?.url || 'none',
+        { candidatesTried: triedUrls }
       );
       setCachedIcon(packageId, failedIcon, {
         source: pkg.source,

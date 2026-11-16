@@ -1003,5 +1003,201 @@ export async function runAllAutomatedTests(): Promise<TestResult[]> {
     }
   });
 
+  // Suite 17: Icon Pipeline V2 (Neutral Placeholder, MS Store CDN Allowlist, Storage Cap, Official Assets)
+  await runTest('Icon Pipeline V2', 'Renders geometric placeholder, allows MS Store CDN, caps Base64 localStorage, and resolves new assets', async () => {
+    const { generateNeutralPlaceholderUri } = await import('../services/icons/placeholder');
+    const { isGenericFaviconLeak } = await import('../services/icons/validator');
+    const { setCachedIcon, getCachedIcon, invalidateIconCache } = await import('../services/icons/cache');
+    const { resolveAppIcon } = await import('../services/icons/resolver');
+
+    const placeholderUri = generateNeutralPlaceholderUri({ name: 'Sample Tool', category: 'Utilities' });
+    const decodedSvg = decodeURIComponent(placeholderUri.replace('data:image/svg+xml;utf8,', ''));
+    if (decodedSvg.includes('<text')) {
+      throw new Error('Neutral placeholder must not emit a 2-letter <text> monogram');
+    }
+
+    if (
+      isGenericFaviconLeak('https://store-images.s-microsoft.com/image/apps.12345.png', 'Mozilla.Firefox') ||
+      isGenericFaviconLeak('https://img-prod-cms-rt-microsoft-com.akamaized.net/cms/api/am/imageFileData/RE1Mu3b', 'App.Foo')
+    ) {
+      throw new Error('Trusted Microsoft Store CDN URLs were mistakenly blocked as generic favicon leaks');
+    }
+    if (!isGenericFaviconLeak('https://www.microsoft.com/favicon.ico', '9NKSQGP7F2NH')) {
+      throw new Error('Generic microsoft.com/favicon.ico portal icon must still be blocked');
+    }
+
+    // Verify large Base64 payloads stay in memory cache but skip localStorage
+    invalidateIconCache('Test.BigIcon', 'winget');
+    const bigBase64 = `data:image/png;base64,${'A'.repeat(3000)}`;
+    setCachedIcon(
+      'Test.BigIcon',
+      {
+        src: bigBase64,
+        isSvg: false,
+        verified: true,
+        sourceType: 'local-app',
+        packageId: 'Test.BigIcon',
+        source: 'winget',
+        altText: 'Test BigIcon',
+        diagnostic: {
+          packageId: 'Test.BigIcon',
+          source: 'winget',
+          primaryUrl: bigBase64,
+          sourceType: 'local-app',
+          validationStatus: 'verified',
+          resolvedAt: Date.now(),
+          verified: true,
+          cacheHit: false,
+        },
+      },
+      { source: 'winget' }
+    );
+    const fromMem = getCachedIcon('Test.BigIcon', 'winget');
+    if (!fromMem || fromMem.src.length < 3000) {
+      throw new Error('Expected oversized data URI to remain readable from memory cache');
+    }
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const persistedRaw = window.localStorage.getItem('apphub_icon_cache_v3:winget::test.bigicon');
+      if (persistedRaw) {
+        throw new Error('Oversized Base64 icon payload must NOT be written into localStorage');
+      }
+    }
+    invalidateIconCache('Test.BigIcon', 'winget');
+
+    for (const id of [
+      'Microsoft.DesktopAppInstaller',
+      'AdGuard.AdGuard',
+      'Audacity.Audacity',
+      'Notepad++.Notepad++',
+    ]) {
+      const resolved = resolveAppIcon({
+        id,
+        name: id,
+        version: '1.0.0',
+        latestVersion: '1.0.0',
+        category: 'Utilities',
+        tags: [],
+        source: 'winget',
+        architectures: [],
+        verified: true,
+      });
+      if (!resolved.verified || resolved.sourceType !== 'official-asset') {
+        throw new Error(`Expected ${id} to resolve to official-asset, got ${resolved.sourceType}`);
+      }
+    }
+  });
+
+  // Suite 18: Large Catalog Quota Safety & Source-Aware Favorites
+  await runTest('Catalog Scale & Source', 'Handles large 5000+ package catalogs and isolates source-aware favorites & external apps', () => {
+    storage.resetAllToDefaults();
+    try {
+      const paddingDesc = 'Synchronized Windows package description entry '.repeat(12);
+      const largeCatalog: Package[] = Array.from({ length: 5000 }, (_, i) => ({
+        id: `Vendor.Package${i}`,
+        packageKey: `winget::vendor.package${i}`,
+        name: `Package ${i}`,
+        version: '1.0.0',
+        latestVersion: '1.0.0',
+        description: paddingDesc,
+        category: 'Utilities',
+        tags: ['utility'],
+        source: 'winget',
+        architectures: ['x64'],
+        verified: true,
+      }));
+      largeCatalog.push(
+        {
+          id: 'App.Dual',
+          packageKey: 'winget::app.dual',
+          name: 'Dual App',
+          version: '1.0',
+          latestVersion: '1.0',
+          category: 'Utilities',
+          tags: [],
+          source: 'winget',
+          architectures: ['x64'],
+          verified: true,
+        },
+        {
+          id: 'App.Dual',
+          packageKey: 'msstore::app.dual',
+          name: 'Dual App (Store)',
+          version: '1.0',
+          latestVersion: '1.0',
+          category: 'Utilities',
+          tags: [],
+          source: 'msstore',
+          architectures: ['x64'],
+          verified: true,
+        },
+        {
+          id: 'ARP\\Machine\\X64\\LegacyApp',
+          packageKey: 'external::arp\\machine\\x64\\legacyapp',
+          name: 'Legacy External App',
+          version: '1.0',
+          latestVersion: '1.0',
+          category: 'Utilities',
+          tags: [],
+          source: 'external',
+          isExternal: true,
+          isInstalled: true,
+          architectures: [],
+          verified: false,
+        }
+      );
+
+      storage.savePackages(largeCatalog);
+      const loaded = storage.getPackages();
+      if (loaded.length !== 5003) {
+        throw new Error(`Expected 5003 packages retained in memory cache, got ${loaded.length}`);
+      }
+
+      const afterFav = storage.setFavorite('App.Dual', true, 'msstore');
+      const storePkg = afterFav.find(p => p.id === 'App.Dual' && p.source === 'msstore');
+      const wingetPkg = afterFav.find(p => p.id === 'App.Dual' && p.source === 'winget');
+      if (!storePkg?.isFavorite || wingetPkg?.isFavorite) {
+        throw new Error(
+          `Expected source-scoped favorite only on msstore (store=${storePkg?.isFavorite}, winget=${wingetPkg?.isFavorite})`
+        );
+      }
+
+      const nonExternalCount = loaded.filter(p => !p.isExternal).length;
+      if (nonExternalCount !== 5002) {
+        throw new Error(`Expected 5002 non-external catalog packages, got ${nonExternalCount}`);
+      }
+    } finally {
+      storage.resetAllToDefaults();
+    }
+  });
+
+  // Suite 19: WinGet Source CLI Flags & Live Detail Selection
+  await runTest('WinGet CLI & Details', 'Emits --source on winget/msstore commands and omits pseudo-sources', () => {
+    const msInstall = wingetEngine.buildInstallArgs('9NKSQGP7F2NH', { source: 'msstore' });
+    if (!msInstall.includes('--source') || msInstall[msInstall.indexOf('--source') + 1] !== 'msstore') {
+      throw new Error(`Missing --source msstore in buildInstallArgs: ${msInstall.join(' ')}`);
+    }
+
+    const extInstall = wingetEngine.buildInstallArgs('Vendor.Local', { source: 'external' });
+    if (extInstall.includes('--source')) {
+      throw new Error(`Pseudo-source 'external' must not emit --source: ${extInstall.join(' ')}`);
+    }
+
+    const storeUninstall = wingetEngine.buildUninstallArgs('9NKSQGP7F2NH', true, 'msstore');
+    if (
+      !storeUninstall.includes('--source') ||
+      storeUninstall[storeUninstall.indexOf('--source') + 1] !== 'msstore'
+    ) {
+      throw new Error(`Missing --source msstore in buildUninstallArgs: ${storeUninstall.join(' ')}`);
+    }
+
+    const wingetUpgrade = wingetEngine.buildUpgradeArgs('Microsoft.VisualStudioCode', true, true, 'winget');
+    if (
+      !wingetUpgrade.includes('--source') ||
+      wingetUpgrade[wingetUpgrade.indexOf('--source') + 1] !== 'winget'
+    ) {
+      throw new Error(`Missing --source winget in buildUpgradeArgs: ${wingetUpgrade.join(' ')}`);
+    }
+  });
+
   return results;
 }

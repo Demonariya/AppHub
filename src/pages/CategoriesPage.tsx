@@ -98,9 +98,11 @@ export const CategoriesPage: React.FC<CategoriesPageProps> = ({
 }) => {
   const [catQuery, setCatQuery] = useState('');
 
+  const catalogPackages = useMemo(() => packages.filter(p => !p.isExternal), [packages]);
+
   const catPackages = useMemo(() => {
     if (!selectedCategory) return [];
-    return packages
+    return catalogPackages
       .filter(p => p.category === selectedCategory)
       .filter(p => {
         if (!catQuery.trim()) return true;
@@ -111,7 +113,7 @@ export const CategoriesPage: React.FC<CategoriesPageProps> = ({
           p.id.toLowerCase().includes(q)
         );
       });
-  }, [packages, selectedCategory, catQuery]);
+  }, [catalogPackages, selectedCategory, catQuery]);
 
   if (selectedCategory) {
     const meta = CATEGORY_META[selectedCategory];
@@ -230,7 +232,7 @@ export const CategoriesPage: React.FC<CategoriesPageProps> = ({
         {CATEGORIES_LIST.map(category => {
           const meta = CATEGORY_META[category];
           const Icon = meta.icon;
-          const catApps = packages.filter(p => p.category === category);
+          const catApps = catalogPackages.filter(p => p.category === category);
           const installedInCat = catApps.filter(p => p.isInstalled).length;
 
           return (

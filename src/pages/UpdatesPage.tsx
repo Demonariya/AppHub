@@ -9,7 +9,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import { AppIconImage } from '../components/common/AppIconImage';
-import { formatBytes } from '../services/catalog';
+import { formatBytes, getPackageKey } from '../services/catalog';
 import { PageHeader, Button, StatusBadge, ErrorState, EmptyState } from '../components/ui';
 
 interface UpdatesPageProps {
@@ -55,32 +55,39 @@ export const UpdatesPage: React.FC<UpdatesPageProps> = ({
   const pinnedList = packages.filter(p => p.isPinned);
 
   useEffect(() => {
-    const currentIds = new Set(updateList.map(p => p.id));
+    const currentKeys = new Set(
+      updateList.map(p => p.packageKey || getPackageKey(p.id, p.source))
+    );
     setSelectedIds(prev => {
       const next = new Set<string>();
-      for (const id of prev) {
-        if (currentIds.has(id)) {
-          next.add(id);
+      for (const key of prev) {
+        if (currentKeys.has(key)) {
+          next.add(key);
         }
       }
       for (const pkg of updateList) {
-        if (!prevIdsRef.current.has(pkg.id) && !pkg.isExcludedFromUpdates && !pkg.isPinned) {
-          next.add(pkg.id);
+        const key = pkg.packageKey || getPackageKey(pkg.id, pkg.source);
+        if (!prevIdsRef.current.has(key) && !pkg.isExcludedFromUpdates && !pkg.isPinned) {
+          next.add(key);
         }
       }
       return next;
     });
-    prevIdsRef.current = currentIds;
+    prevIdsRef.current = currentKeys;
   }, [packages]);
 
   const knownDownloadBytes = updateList
-    .filter(p => selectedIds.has(p.id) && (p.downloadSizeBytes || p.sizeBytes))
+    .filter(
+      p =>
+        selectedIds.has(p.packageKey || getPackageKey(p.id, p.source)) &&
+        (p.downloadSizeBytes || p.sizeBytes)
+    )
     .reduce((sum, p) => sum + (p.downloadSizeBytes || p.sizeBytes || 0), 0);
 
-  const toggleSelect = (id: string) => {
+  const toggleSelect = (pkgKey: string) => {
     const next = new Set(selectedIds);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
+    if (next.has(pkgKey)) next.delete(pkgKey);
+    else next.add(pkgKey);
     setSelectedIds(next);
   };
 
@@ -88,19 +95,22 @@ export const UpdatesPage: React.FC<UpdatesPageProps> = ({
     if (selectedIds.size === updateList.length) {
       setSelectedIds(new Set());
     } else {
-      setSelectedIds(new Set(updateList.map(p => p.id)));
+      setSelectedIds(new Set(updateList.map(p => p.packageKey || getPackageKey(p.id, p.source))));
     }
   };
 
   const handleUpdateAllSelected = () => {
-    const toUpdate = updateList.filter(p => selectedIds.has(p.id));
+    const toUpdate = updateList.filter(p =>
+      selectedIds.has(p.packageKey || getPackageKey(p.id, p.source))
+    );
     if (toUpdate.length > 0) {
       onUpdateAll(toUpdate);
     }
   };
 
   const handleTogglePin = async (pkg: Package, pin: boolean) => {
-    setPinningId(pkg.id);
+    const pkgKey = pkg.packageKey || getPackageKey(pkg.id, pkg.source);
+    setPinningId(pkgKey);
     try {
       await onPinPackage(pkg, pin);
     } finally {
@@ -108,8 +118,14 @@ export const UpdatesPage: React.FC<UpdatesPageProps> = ({
     }
   };
 
-  const getPackageLiveTask = (pkgId: string) =>
-    activeTasks.find(t => t.packageId === pkgId) || queue.find(t => t.packageId === pkgId);
+  const getPackageLiveTask = (pkg: Package) => {
+    const idLower = pkg.id.toLowerCase();
+    const srcLower = (pkg.source || 'winget').toLowerCase();
+    const matchTask = (t: InstallationTask) =>
+      t.packageId.toLowerCase() === idLower &&
+      (!t.source || t.source.toLowerCase() === srcLower);
+    return activeTasks.find(matchTask) || queue.find(matchTask);
+  };
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-6 animate-page-in">
@@ -186,13 +202,14 @@ export const UpdatesPage: React.FC<UpdatesPageProps> = ({
           {/* Updates Table/Rows */}
           <div className="rounded-[12px] border border-[var(--border-subtle)] overflow-hidden divide-y divide-[var(--border-subtle)] bg-[var(--surface-panel)]">
             {updateList.map(pkg => {
-              const isSelected = selectedIds.has(pkg.id);
-              const isPinning = pinningId === pkg.id;
-              const liveTask = getPackageLiveTask(pkg.id);
+              const pkgKey = pkg.packageKey || getPackageKey(pkg.id, pkg.source);
+              const isSelected = selectedIds.has(pkgKey);
+              const isPinning = pinningId === pkgKey;
+              const liveTask = getPackageLiveTask(pkg);
 
               return (
                 <div
-                  key={pkg.packageKey || `${pkg.source}::${pkg.id}`}
+                  key={pkgKey}
                   onClick={() => onOpenDetails(pkg)}
                   className="p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 hover:bg-[var(--surface-hover)]/65 transition-colors cursor-pointer"
                 >
@@ -200,7 +217,7 @@ export const UpdatesPage: React.FC<UpdatesPageProps> = ({
                     <input
                       type="checkbox"
                       checked={isSelected}
-                      onChange={() => toggleSelect(pkg.id)}
+                      onChange={() => toggleSelect(pkgKey)}
                       aria-label={`Select ${pkg.name} for update`}
                       className="w-4 h-4 rounded accent-[var(--accent-primary)] cursor-pointer"
                     />
@@ -352,7 +369,7 @@ export const UpdatesPage: React.FC<UpdatesPageProps> = ({
                   size="sm"
                   variant="ghost"
                   onClick={() => handleTogglePin(pkg, false)}
-                  disabled={pinningId === pkg.id}
+                  disabled={pinningId === (pkg.packageKey || getPackageKey(pkg.id, pkg.source))}
                 >
                   Unpin
                 </Button>

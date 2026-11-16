@@ -2,6 +2,7 @@ use crate::errors::AppHubError;
 use crate::models::{CommandOutputPayload, OperationPhase, OperationStatus, WinGetOutputEvent};
 use crate::security::validate_flag_argument;
 use crate::winget::detector::resolve_winget_binary;
+use crate::winget::parser::strip_ansi_codes;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::process::Stdio;
@@ -100,6 +101,17 @@ impl OperationManager {
             let _ = tx.send(());
         }
         true
+    }
+
+    pub fn build_lock_key(package_id: &str, source: Option<&str>) -> String {
+        let pkg = package_id.trim().to_ascii_lowercase();
+        match source
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("external"))
+        {
+            Some(src) => format!("{}::{}", src.to_ascii_lowercase(), pkg),
+            None => pkg,
+        }
     }
 
     pub fn try_lock_package(&self, package_id: &str) -> Result<(), AppHubError> {
@@ -288,7 +300,11 @@ pub fn detect_phase(line: &str) -> Option<OperationPhase> {
 
 fn is_spinner_noise(line: &str) -> bool {
     let t = line.trim();
-    t.is_empty() || matches!(t, "-" | "\\" | "|" | "/")
+    if t.is_empty() || matches!(t, "-" | "\\" | "|" | "/") {
+        return true;
+    }
+    t.chars()
+        .all(|c| ('\u{2800}'..='\u{28ff}').contains(&c) || c == ' ')
 }
 
 /// Decodes raw chunked byte streams into complete CR/LF lines without breaking multi-byte UTF-8 boundaries.
@@ -338,7 +354,8 @@ fn emit_stream_line(
     seq: &Arc<AtomicU64>,
     raw_line: &str,
 ) {
-    let trimmed = raw_line.trim();
+    let cleaned = strip_ansi_codes(raw_line);
+    let trimmed = cleaned.trim();
     if is_spinner_noise(trimmed) {
         return;
     }
@@ -819,10 +836,24 @@ mod tests {
     #[test]
     fn test_operation_manager_prevents_duplicate_package_lock() {
         let mgr = OperationManager::new();
-        assert!(mgr.try_lock_package("Git.Git").is_ok());
-        assert!(mgr.try_lock_package("Git.Git").is_err());
-        assert!(mgr.try_lock_package("Mozilla.Firefox").is_ok());
-        mgr.unlock_package("Git.Git");
-        assert!(mgr.try_lock_package("Git.Git").is_ok());
+        let winget_git = OperationManager::build_lock_key("Git.Git", Some("winget"));
+        let msstore_git = OperationManager::build_lock_key("Git.Git", Some("msstore"));
+        assert_ne!(winget_git, msstore_git);
+
+        assert!(mgr.try_lock_package(&winget_git).is_ok());
+        assert!(mgr.try_lock_package(&winget_git).is_err());
+        assert!(mgr.try_lock_package(&msstore_git).is_ok());
+        mgr.unlock_package(&winget_git);
+        assert!(mgr.try_lock_package(&winget_git).is_ok());
+    }
+
+    #[test]
+    fn test_ansi_wrapped_progress_and_braille_noise() {
+        let cleaned = strip_ansi_codes("\x1b[32m  22.5 MiB / 45.0 MiB  1.25 MiB/s\x1b[0m");
+        let parsed = parse_progress_from_line(cleaned.trim());
+        assert!(parsed.progress_percent.unwrap() > 49.9);
+        assert_eq!(parsed.download_speed.as_deref(), Some("1.25 MiB/s"));
+        assert!(is_spinner_noise("⠋"));
+        assert!(!is_spinner_noise("Downloading 10%"));
     }
 }

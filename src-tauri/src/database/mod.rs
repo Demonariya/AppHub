@@ -223,6 +223,41 @@ impl DatabaseManager {
             "#,
         )?;
 
+        // Migration v5: source-aware installation history & composite-keyed favorites (preserving existing rows)
+        if !cols.iter().any(|c| c == "source") {
+            conn.execute("ALTER TABLE installation_history ADD COLUMN source TEXT", [])?;
+        }
+
+        let v5_applied: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 5)",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+            != 0;
+
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS favorites_v5 (
+                fav_key TEXT PRIMARY KEY,
+                package_id TEXT NOT NULL,
+                source TEXT,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_favorites_v5_pkg ON favorites_v5(package_id);
+            "#,
+        )?;
+
+        if !v5_applied {
+            conn.execute_batch(
+                r#"
+                INSERT OR IGNORE INTO favorites_v5 (fav_key, package_id, source, created_at)
+                SELECT LOWER(package_id), package_id, NULL, created_at FROM favorites;
+                "#,
+            )?;
+        }
+
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (1, ?1)",
             params![now],
@@ -237,6 +272,10 @@ impl DatabaseManager {
         )?;
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (4, ?1)",
+            params![now],
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (5, ?1)",
             params![now],
         )?;
 
@@ -894,8 +933,17 @@ impl DatabaseManager {
     // --- Favorites ---
     pub fn get_favorites(&self) -> Result<Vec<String>, AppHubError> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT package_id FROM favorites ORDER BY created_at DESC")?;
-        let rows = stmt.query_map([], |row| row.get(0))?;
+        let mut stmt = conn.prepare(
+            "SELECT package_id, source FROM favorites_v5 ORDER BY created_at DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let pkg_id: String = row.get(0)?;
+            let src: Option<String> = row.get(1)?;
+            Ok(match src {
+                Some(s) if !s.trim().is_empty() => format!("{}::{}", s.trim().to_lowercase(), pkg_id),
+                _ => pkg_id,
+            })
+        })?;
         let mut res = Vec::new();
         for r in rows {
             res.push(r?);
@@ -904,18 +952,59 @@ impl DatabaseManager {
     }
 
     pub fn set_favorite(&self, package_id: &str, is_fav: bool) -> Result<(), AppHubError> {
+        self.set_favorite_with_source(package_id, None, is_fav)
+    }
+
+    pub fn set_favorite_with_source(
+        &self,
+        package_id: &str,
+        source: Option<&str>,
+        is_fav: bool,
+    ) -> Result<(), AppHubError> {
         let conn = self.conn.lock().unwrap();
+        let src_clean = source
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_lowercase());
+        let fav_key = match &src_clean {
+            Some(s) => format!("{}::{}", s, package_id.trim().to_lowercase()),
+            None => package_id.trim().to_lowercase(),
+        };
+
         if is_fav {
             let now = chrono::Utc::now().timestamp_millis();
             conn.execute(
-                "INSERT OR REPLACE INTO favorites (package_id, created_at) VALUES (?1, ?2)",
-                params![package_id, now],
+                "INSERT OR REPLACE INTO favorites_v5 (fav_key, package_id, source, created_at) VALUES (?1, ?2, ?3, ?4)",
+                params![fav_key, package_id.trim(), src_clean, now],
             )?;
+            // Keep legacy table synced for plain IDs for downgrade compatibility
+            if src_clean.is_none() {
+                let _ = conn.execute(
+                    "INSERT OR REPLACE INTO favorites (package_id, created_at) VALUES (?1, ?2)",
+                    params![package_id.trim(), now],
+                );
+            }
         } else {
             conn.execute(
-                "DELETE FROM favorites WHERE package_id = ?1",
-                params![package_id],
+                "DELETE FROM favorites_v5 WHERE fav_key = ?1",
+                params![fav_key],
             )?;
+            // Also clean matching un-scoped legacy key when explicitly un-starring with source
+            if src_clean.is_some() {
+                conn.execute(
+                    "DELETE FROM favorites_v5 WHERE fav_key = ?1",
+                    params![package_id.trim().to_lowercase()],
+                )?;
+            } else {
+                conn.execute(
+                    "DELETE FROM favorites_v5 WHERE LOWER(package_id) = ?1",
+                    params![package_id.trim().to_lowercase()],
+                )?;
+            }
+            let _ = conn.execute(
+                "DELETE FROM favorites WHERE LOWER(package_id) = ?1",
+                params![package_id.trim().to_lowercase()],
+            );
         }
         Ok(())
     }
@@ -937,12 +1026,13 @@ impl DatabaseManager {
         queued_at: Option<i64>,
         started_at: Option<i64>,
         ended_at: Option<i64>,
+        source: Option<&str>,
     ) -> Result<(), AppHubError> {
         let conn = self.conn.lock().unwrap();
         let eff_queued = queued_at.unwrap_or(start_time);
         let eff_ended = ended_at.or(end_time);
         conn.execute(
-            "INSERT OR REPLACE INTO installation_history (id, package_id, package_name, action, version, status, error_message, exit_code, start_time, end_time, queued_at, started_at, ended_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            "INSERT OR REPLACE INTO installation_history (id, package_id, package_name, action, version, status, error_message, exit_code, start_time, end_time, queued_at, started_at, ended_at, source) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 id,
                 package_id,
@@ -956,7 +1046,8 @@ impl DatabaseManager {
                 end_time,
                 eff_queued,
                 started_at,
-                eff_ended
+                eff_ended,
+                source,
             ],
         )?;
         Ok(())
@@ -965,7 +1056,7 @@ impl DatabaseManager {
     pub fn get_history(&self, limit: usize) -> Result<Vec<HistoryRecord>, AppHubError> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, package_id, package_name, action, version, status, error_message, exit_code, start_time, end_time, queued_at, started_at, ended_at FROM installation_history ORDER BY COALESCE(queued_at, start_time) DESC LIMIT ?1",
+            "SELECT id, package_id, package_name, action, version, status, error_message, exit_code, start_time, end_time, queued_at, started_at, ended_at, source FROM installation_history ORDER BY COALESCE(queued_at, start_time) DESC LIMIT ?1",
         )?;
         let rows = stmt.query_map(params![limit as i64], |row| {
             Ok(HistoryRecord {
@@ -979,6 +1070,7 @@ impl DatabaseManager {
                 exit_code: row.get(7)?,
                 start_time: row.get(8)?,
                 end_time: row.get(9)?,
+                source: row.get(13)?,
                 queued_at: row.get(10)?,
                 started_at: row.get(11)?,
                 ended_at: row.get(12)?,
@@ -1158,17 +1250,18 @@ mod tests {
         db.set_setting("theme", "dark").unwrap();
         assert_eq!(db.get_setting("theme").unwrap(), Some("dark".to_string()));
 
-        // 2. Favorites
+        // 2. Favorites (source-less + source-scoped isolation)
         db.set_favorite("Git.Git", true).unwrap();
-        db.set_favorite("Mozilla.Firefox", true).unwrap();
+        db.set_favorite_with_source("Mozilla.Firefox", Some("msstore"), true).unwrap();
         let favs = db.get_favorites().unwrap();
         assert_eq!(favs.len(), 2);
         assert!(favs.contains(&"Git.Git".to_string()));
+        assert!(favs.contains(&"msstore::Mozilla.Firefox".to_string()));
 
         db.set_favorite("Git.Git", false).unwrap();
         let favs_after = db.get_favorites().unwrap();
         assert_eq!(favs_after.len(), 1);
-        assert_eq!(favs_after[0], "Mozilla.Firefox");
+        assert_eq!(favs_after[0], "msstore::Mozilla.Firefox");
 
         // 3. History + startup interrupted recovery (including 'preparing' state)
         db.insert_history(
@@ -1185,6 +1278,7 @@ mod tests {
             Some(1700000090),
             Some(1700000100),
             None,
+            Some("winget"),
         )
         .unwrap();
         db.insert_history(
@@ -1201,6 +1295,7 @@ mod tests {
             Some(1700000140),
             Some(1700000150),
             None,
+            Some("winget"),
         )
         .unwrap();
         let recovered = db.mark_interrupted_history_failed().unwrap();
@@ -1209,6 +1304,7 @@ mod tests {
         assert_eq!(hist[0].status, "failed");
         assert!(hist[0].error_message.is_some());
         assert!(hist[0].ended_at.is_some());
+        assert_eq!(hist[0].source.as_deref(), Some("winget"));
 
         db.insert_history(
             "task_1",
@@ -1224,6 +1320,7 @@ mod tests {
             Some(1700000190),
             Some(1700000200),
             Some(1700000250),
+            Some("winget"),
         )
         .unwrap();
         let hist2 = db.get_history(10).unwrap();

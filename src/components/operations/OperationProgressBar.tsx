@@ -25,8 +25,10 @@ export const OperationProgressBar: React.FC<OperationProgressBarProps> = ({
 }) => {
   const isTerminal = phase === 'completed' || phase === 'failed' || phase === 'cancelled';
   const showIndeterminate =
-    !isTerminal && (Boolean(isIndeterminate) || (progress === 0 && phase !== 'queued'));
+    !isTerminal &&
+    (isIndeterminate === true || (isIndeterminate === undefined && progress === 0 && phase !== 'queued'));
   const clamped = Math.max(0, Math.min(100, Math.round(progress)));
+  const displayPercent = !isTerminal && clamped >= 100 ? 99 : clamped;
   const byteRatio = formatByteRatio(bytesDownloaded, totalBytes);
 
   const barColor =
@@ -39,8 +41,8 @@ export const OperationProgressBar: React.FC<OperationProgressBarProps> = ({
       : 'bg-[var(--accent-primary)]';
 
   const metrics: string[] = [];
-  if (!showIndeterminate && (clamped > 0 || phase === 'completed')) {
-    metrics.push(`${clamped}%`);
+  if (!showIndeterminate && (displayPercent > 0 || isIndeterminate === false || phase === 'completed')) {
+    metrics.push(`${displayPercent}%`);
   }
   if (byteRatio) {
     metrics.push(byteRatio);
@@ -63,15 +65,15 @@ export const OperationProgressBar: React.FC<OperationProgressBarProps> = ({
         role="progressbar"
         aria-valuemin={0}
         aria-valuemax={100}
-        aria-valuenow={showIndeterminate ? undefined : clamped}
-        className="w-full h-1.5 rounded-full bg-[var(--surface-active)] overflow-hidden"
+        aria-valuenow={showIndeterminate ? undefined : displayPercent}
+        className="w-full h-2 rounded-full bg-[var(--surface-active)] overflow-hidden"
       >
         {showIndeterminate ? (
           <div className={`h-full rounded-full animate-indeterminate ${barColor}`} />
         ) : (
           <div
             className={`h-full transition-all duration-300 rounded-full ${barColor}`}
-            style={{ width: `${clamped > 0 ? Math.max(clamped, 2) : 0}%` }}
+            style={{ width: `${displayPercent}%` }}
           />
         )}
       </div>

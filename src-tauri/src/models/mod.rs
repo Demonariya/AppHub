@@ -248,6 +248,8 @@ pub struct HistoryRecord {
     pub start_time: i64,
     pub end_time: Option<i64>,
     #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
     pub queued_at: Option<i64>,
     #[serde(default)]
     pub started_at: Option<i64>,
@@ -303,4 +305,8 @@ pub struct IconResolveResponse {
     pub expires_at: i64,
     pub verified: bool,
     pub from_cache: bool,
+    #[serde(default)]
+    pub candidates_tried: Vec<String>,
+    #[serde(default)]
+    pub http_status: Option<u16>,
 }

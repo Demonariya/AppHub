@@ -1,7 +1,7 @@
 /**
- * Generates neutral, category-aware monogram SVG data URIs.
+ * Generates neutral, category-aware geometric application placeholder SVG data URIs.
  * Used exclusively when a package lacks an authentic icon.
- * Guarantees crisp high-contrast presentation without leaking generic website favicons.
+ * Renders a crisp application window/cube symbol instead of misleading 2-letter initials.
  */
 
 interface PlaceholderOptions {
@@ -23,36 +23,30 @@ const CATEGORY_COLORS: Record<string, { bg: string; border: string; accent: stri
   'Utilities': { bg: '#18181B', border: '#27272A', accent: '#94A3B8' },
   'Compression': { bg: '#1C1917', border: '#292524', accent: '#FBBF24' },
   'Hardware': { bg: '#14532D', border: '#15803D', accent: '#22C55E' },
+  'Drivers and Hardware Utilities': { bg: '#14532D', border: '#15803D', accent: '#22C55E' },
+  'System Tools': { bg: '#0F172A', border: '#334155', accent: '#60A5FA' },
 };
 
-const DEFAULT_THEME = { bg: '#171717', border: '#262626', accent: '#A3A3A3' };
+const DEFAULT_THEME = { bg: '#171717', border: '#262626', accent: '#94A3B8' };
 
-export function generateNeutralMonogramUri({
-  name,
+export function generateNeutralPlaceholderUri({
   category = 'Utilities',
-  packageId = '',
 }: PlaceholderOptions): string {
   const theme = CATEGORY_COLORS[category] || DEFAULT_THEME;
-
-  // Extract clean monogram initials (1-2 characters)
-  const cleanName = (name || packageId || 'App').trim();
-  const words = cleanName.split(/[\s.\-_]+/).filter(Boolean);
-  let initials = 'A';
-  if (words.length >= 2) {
-    initials = (words[0][0] + words[1][0]).toUpperCase();
-  } else if (words.length === 1) {
-    initials = words[0].slice(0, 2).toUpperCase();
-  }
 
   const svg = `
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100%" height="100%">
   <rect width="100" height="100" rx="22" fill="${theme.bg}" stroke="${theme.border}" stroke-width="3" />
-  <circle cx="50" cy="50" r="32" fill="${theme.border}" opacity="0.4" />
-  <text x="50" y="58" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="30" font-weight="700" fill="${theme.accent}" text-anchor="middle" dominant-baseline="middle" letter-spacing="0.5">
-    ${initials}
-  </text>
+  <rect x="24" y="26" width="52" height="48" rx="10" fill="none" stroke="${theme.accent}" stroke-width="4" stroke-opacity="0.9" />
+  <line x1="24" y1="40" x2="76" y2="40" stroke="${theme.accent}" stroke-width="3.5" stroke-opacity="0.65" />
+  <circle cx="33" cy="33" r="2.5" fill="${theme.accent}" />
+  <circle cx="41" cy="33" r="2.5" fill="${theme.accent}" fill-opacity="0.7" />
+  <path d="M50 48L62 54.5V66.5L50 73L38 66.5V54.5L50 48Z" fill="${theme.accent}" fill-opacity="0.22" stroke="${theme.accent}" stroke-width="2.5" stroke-linejoin="round" />
 </svg>
   `.replace(/\s+/g, ' ').trim();
 
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
 }
+
+// Backwards-compatible export symbol
+export const generateNeutralMonogramUri = generateNeutralPlaceholderUri;

@@ -54,6 +54,13 @@ pub fn is_safe_icon_url(url: &str) -> Result<String, String> {
     {
         return Err("Blocked unreliable winget-pkgs asset path".to_string());
     }
+    // Trusted Microsoft Store / App CDN hosts are always allowed even though they contain "microsoft.com"
+    if lower.starts_with("https://store-images.s-microsoft.com/")
+        || lower.starts_with("http://store-images.s-microsoft.com/")
+        || lower.starts_with("https://img-prod-cms-rt-microsoft-com.akamaized.net/")
+    {
+        return Ok(trimmed.to_string());
+    }
     if lower.contains("microsoft.com/favicon.ico")
         || lower.contains("www.microsoft.com/favicon")
         || lower.contains("live.com/favicon")
@@ -366,8 +373,8 @@ fn parse_final_http_status_and_content_type(headers: &[u8]) -> (Option<u16>, Opt
 
 async fn download_remote_icon_bytes(
     url: &str,
-) -> Result<(Vec<u8>, Option<String>), String> {
-    let safe_url = is_safe_icon_url(url)?;
+) -> Result<(Vec<u8>, Option<String>, Option<u16>), (String, Option<u16>)> {
+    let safe_url = is_safe_icon_url(url).map_err(|e| (e, None))?;
     let curl_bin = if cfg!(windows) { "curl.exe" } else { "curl" };
     let temp_header_path = std::env::temp_dir().join(format!(
         "apphub_icon_hdr_{}_{}.tmp",
@@ -404,35 +411,439 @@ async fn download_remote_icon_bytes(
 
     let child = cmd
         .spawn()
-        .map_err(|e| format!("Failed to spawn curl for icon fetch: {}", e))?;
+        .map_err(|e| (format!("Failed to spawn curl for icon fetch: {}", e), None))?;
 
     let output = tokio::time::timeout(Duration::from_secs(7), child.wait_with_output())
         .await
-        .map_err(|_| "Icon download timed out".to_string())?
-        .map_err(|e| format!("Icon download I/O error: {}", e))?;
+        .map_err(|_| ("Icon download timed out".to_string(), None))?
+        .map_err(|e| (format!("Icon download I/O error: {}", e), None))?;
 
     let header_bytes = fs::read(&temp_header_path).unwrap_or_default();
     let _ = fs::remove_file(&temp_header_path);
+    let (status_code, content_type) = parse_final_http_status_and_content_type(&header_bytes);
 
     if !output.status.success() {
         let stderr_msg = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(if stderr_msg.is_empty() {
-            format!("curl exited with status {:?}", output.status.code())
-        } else {
-            stderr_msg
-        });
+        return Err((
+            if stderr_msg.is_empty() {
+                format!("curl exited with status {:?}", output.status.code())
+            } else {
+                stderr_msg
+            },
+            status_code,
+        ));
     }
 
-    let (status_code, content_type) = parse_final_http_status_and_content_type(&header_bytes);
     if let Some(code) = status_code {
         if !(200..300).contains(&code) {
-            return Err(format!("HTTP {} returned by icon host", code));
+            return Err((
+                format!("HTTP {} returned by icon host", code),
+                Some(code),
+            ));
         }
     }
 
-    Ok((output.stdout, content_type))
+    Ok((output.stdout, content_type, status_code))
 }
 
+async fn fetch_text_payload(url: &str, timeout_secs: u64) -> Option<String> {
+    let curl_bin = if cfg!(windows) { "curl.exe" } else { "curl" };
+    let mut cmd = Command::new(curl_bin);
+    cmd.args([
+        "-s",
+        "-L",
+        "--max-redirs",
+        "4",
+        "--max-time",
+        &timeout_secs.to_string(),
+        "--max-filesize",
+        "524288",
+        "-A",
+        "AppHub/1.0 MetadataDiscovery",
+        "--",
+        url,
+    ])
+    .kill_on_drop(true)
+    .stdin(Stdio::null())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::null());
+
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+
+    let child = cmd.spawn().ok()?;
+    let output = tokio::time::timeout(Duration::from_secs(timeout_secs + 1), child.wait_with_output())
+        .await
+        .ok()?
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+pub fn is_msstore_product_id(package_id: &str) -> bool {
+    let trimmed = package_id.trim();
+    if trimmed.len() < 10 || trimmed.len() > 20 || trimmed.contains('.') || trimmed.contains('\\') {
+        return false;
+    }
+    let has_digit = trimmed.chars().any(|c| c.is_ascii_digit());
+    let valid_chars = trimmed.chars().all(|c| c.is_ascii_alphanumeric());
+    valid_chars && has_digit && (trimmed.starts_with('9') || trimmed.starts_with("XP"))
+}
+
+pub fn parse_display_catalog_icon_urls(json_str: &str) -> Vec<String> {
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) else {
+        return Vec::new();
+    };
+    let mut preferred: Vec<String> = Vec::new();
+    let mut secondary: Vec<String> = Vec::new();
+
+    if let Some(products) = val.get("Products").and_then(|v| v.as_array()) {
+        for prod in products {
+            if let Some(loc_props) = prod.get("LocalizedProperties").and_then(|v| v.as_array()) {
+                for loc in loc_props {
+                    if let Some(images) = loc.get("Images").and_then(|v| v.as_array()) {
+                        for img in images {
+                            let purpose = img
+                                .get("ImagePurpose")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_ascii_lowercase();
+                            let Some(raw_uri) = img.get("Uri").and_then(|v| v.as_str()) else {
+                                continue;
+                            };
+                            let normalized = if raw_uri.starts_with("//") {
+                                format!("https:{}", raw_uri)
+                            } else {
+                                raw_uri.to_string()
+                            };
+                            if is_safe_icon_url(&normalized).is_err() {
+                                continue;
+                            }
+                            if purpose == "logo" || purpose == "tile" {
+                                if !preferred.contains(&normalized) {
+                                    preferred.push(normalized);
+                                }
+                            } else if purpose == "boxart" || purpose == "poster" {
+                                if !secondary.contains(&normalized) {
+                                    secondary.push(normalized);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    preferred.extend(secondary);
+    preferred
+}
+
+pub fn parse_yaml_icon_urls(yaml_content: &str) -> Vec<String> {
+    let mut urls = Vec::new();
+    for line in yaml_content.lines() {
+        let trimmed = line.trim();
+        let cleaned = trimmed.trim_start_matches('-').trim();
+        if let Some((key, val)) = cleaned.split_once(':') {
+            let k = key.trim();
+            if k.eq_ignore_ascii_case("IconUrl") {
+                let candidate = val
+                    .trim()
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .to_string();
+                if is_safe_icon_url(&candidate).is_ok() && !urls.contains(&candidate) {
+                    urls.push(candidate);
+                }
+            }
+        }
+    }
+    urls
+}
+
+fn resolve_relative_url(base_url: &str, href: &str) -> Option<String> {
+    let h = href.trim();
+    if h.is_empty() || h.starts_with("data:") || h.starts_with("javascript:") {
+        return None;
+    }
+    if h.starts_with("https://") || h.starts_with("http://") {
+        return Some(h.to_string());
+    }
+    let scheme_end = base_url.find("://")?;
+    let scheme = &base_url[..scheme_end];
+    if h.starts_with("//") {
+        return Some(format!("{}:{}", scheme, h));
+    }
+    let after_scheme = &base_url[(scheme_end + 3)..];
+    let authority = after_scheme.split('/').next().unwrap_or("");
+    if authority.is_empty() {
+        return None;
+    }
+    if h.starts_with('/') {
+        Some(format!("{}://{}{}", scheme, authority, h))
+    } else {
+        let dir = match base_url.rsplit_once('/') {
+            Some((prefix, _)) if prefix.len() > scheme_end + 3 => prefix,
+            _ => return Some(format!("{}://{}/{}", scheme, authority, h)),
+        };
+        Some(format!("{}/{}", dir, h))
+    }
+}
+
+fn extract_html_attr(tag: &str, attr_name: &str) -> Option<String> {
+    let lower = tag.to_ascii_lowercase();
+    let needle = format!("{}=", attr_name.to_ascii_lowercase());
+    let idx = lower.find(&needle)?;
+    let rest = tag[(idx + needle.len())..].trim_start();
+    if let Some(stripped) = rest.strip_prefix('"') {
+        stripped.split('"').next().map(|s| s.to_string())
+    } else if let Some(stripped) = rest.strip_prefix('\'') {
+        stripped.split('\'').next().map(|s| s.to_string())
+    } else {
+        rest.split(|c: char| c.is_whitespace() || c == '>')
+            .next()
+            .map(|s| s.to_string())
+    }
+}
+
+pub fn extract_html_icon_urls(html: &str, base_url: &str) -> Vec<String> {
+    let mut apple_icons: Vec<String> = Vec::new();
+    let mut std_icons: Vec<String> = Vec::new();
+    let mut pos = 0usize;
+    let lower_html = html.to_ascii_lowercase();
+
+    while let Some(rel_start) = lower_html[pos..].find("<link") {
+        let abs_start = pos + rel_start;
+        let Some(rel_end) = lower_html[abs_start..].find('>') else {
+            break;
+        };
+        let tag = &html[abs_start..=(abs_start + rel_end)];
+        pos = abs_start + rel_end + 1;
+
+        if let (Some(rel_val), Some(href_val)) =
+            (extract_html_attr(tag, "rel"), extract_html_attr(tag, "href"))
+        {
+            let rel_l = rel_val.to_ascii_lowercase();
+            let is_apple = rel_l.contains("apple-touch-icon");
+            let is_icon = rel_l
+                .split_whitespace()
+                .any(|tok| tok == "icon" || tok == "shortcut");
+            if is_apple || is_icon {
+                if let Some(resolved) = resolve_relative_url(base_url, &href_val) {
+                    if is_safe_icon_url(&resolved).is_ok() {
+                        if is_apple {
+                            if !apple_icons.contains(&resolved) {
+                                apple_icons.push(resolved);
+                            }
+                        } else if !std_icons.contains(&resolved) {
+                            std_icons.push(resolved);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    apple_icons.extend(std_icons);
+    apple_icons
+}
+
+async fn discover_msstore_icons(product_id: &str) -> Vec<String> {
+    let api_url = format!(
+        "https://displaycatalog.mp.microsoft.com/v7.0/products?bigIds={}&market=US&languages=en-us,neutral",
+        product_id.trim()
+    );
+    let Some(json_str) = fetch_text_payload(&api_url, 4).await else {
+        return Vec::new();
+    };
+    parse_display_catalog_icon_urls(&json_str)
+}
+
+async fn discover_winget_pkgs_yaml_icons(package_id: &str) -> Vec<String> {
+    let trimmed = package_id.trim();
+    if !trimmed.contains('.') || trimmed.starts_with("ARP\\") || trimmed.starts_with("MSIX\\") {
+        return Vec::new();
+    }
+    let Some(first_char) = trimmed.chars().next() else {
+        return Vec::new();
+    };
+    let pkg_path = trimmed.replace('.', "/");
+    let contents_url = format!(
+        "https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/{}/{}",
+        first_char.to_ascii_lowercase(),
+        pkg_path
+    );
+    let Some(dir_json) = fetch_text_payload(&contents_url, 4).await else {
+        return Vec::new();
+    };
+    let Ok(serde_json::Value::Array(entries)) = serde_json::from_str::<serde_json::Value>(&dir_json)
+    else {
+        return Vec::new();
+    };
+
+    let mut version_dirs: Vec<(String, String)> = entries
+        .into_iter()
+        .filter_map(|e| {
+            let kind = e.get("type")?.as_str()?;
+            if kind != "dir" {
+                return None;
+            }
+            let name = e.get("name")?.as_str()?.to_string();
+            let url = e.get("url")?.as_str()?.to_string();
+            Some((name, url))
+        })
+        .collect();
+    version_dirs.sort_by(|a, b| a.0.cmp(&b.0));
+    let Some((_, latest_dir_url)) = version_dirs.pop() else {
+        return Vec::new();
+    };
+
+    let Some(ver_json) = fetch_text_payload(&latest_dir_url, 4).await else {
+        return Vec::new();
+    };
+    let Ok(serde_json::Value::Array(files)) = serde_json::from_str::<serde_json::Value>(&ver_json)
+    else {
+        return Vec::new();
+    };
+
+    let locale_download = files.into_iter().find_map(|f| {
+        let name = f.get("name")?.as_str()?.to_ascii_lowercase();
+        if name.ends_with(".locale.en-us.yaml") || name.contains(".locale.") && name.ends_with(".yaml") {
+            f.get("download_url")?.as_str().map(|s| s.to_string())
+        } else {
+            None
+        }
+    });
+    let Some(raw_yaml_url) = locale_download else {
+        return Vec::new();
+    };
+    let Some(yaml_text) = fetch_text_payload(&raw_yaml_url, 4).await else {
+        return Vec::new();
+    };
+    parse_yaml_icon_urls(&yaml_text)
+}
+
+#[cfg(windows)]
+async fn extract_windows_local_app_icon(
+    package_id: &str,
+    package_name: Option<&str>,
+) -> Option<(Vec<u8>, String)> {
+    let temp_png = std::env::temp_dir().join(format!(
+        "apphub_winicon_{}_{}.png",
+        std::process::id(),
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+    ));
+    let ps_script = r#"
+$ErrorActionPreference = 'SilentlyContinue'
+$outPath = $env:APPHUB_ICON_OUT_PATH
+$pkgId = $env:APPHUB_PKG_ID
+$pkgName = $env:APPHUB_PKG_NAME
+if ([string]::IsNullOrWhiteSpace($outPath)) { exit 1 }
+
+Add-Type -AssemblyName System.Drawing
+
+function Save-AssociatedIcon($filePath) {
+  if ([string]::IsNullOrWhiteSpace($filePath)) { return $false }
+  $clean = $filePath.Trim().Trim('"')
+  if ($clean -match '^(.+?),\s*-?\d+$') { $clean = $matches[1].Trim('"') }
+  $clean = [Environment]::ExpandEnvironmentVariables($clean)
+  if (-not (Test-Path -LiteralPath $clean)) { return $false }
+  if ($clean -match '\.(png|jpg|jpeg|ico)$') {
+    try {
+      Copy-Item -LiteralPath $clean -Destination $outPath -Force
+      return (Test-Path -LiteralPath $outPath)
+    } catch {}
+  }
+  $ico = [System.Drawing.Icon]::ExtractAssociatedIcon($clean)
+  if ($null -eq $ico) { return $false }
+  $bmp = $ico.ToBitmap()
+  $bmp.Save($outPath, [System.Drawing.Imaging.ImageFormat]::Png)
+  $bmp.Dispose()
+  $ico.Dispose()
+  return (Test-Path -LiteralPath $outPath)
+}
+
+if ($pkgId -like 'MSIX\*') {
+  $msixKey = ($pkgId -split '\\')[-1]
+  $pkg = Get-AppxPackage | Where-Object { $_.PackageFullName -eq $msixKey -or ($pkgName -and $_.Name -eq $pkgName) } | Select-Object -First 1
+  if ($pkg -and $pkg.InstallLocation -and (Test-Path (Join-Path $pkg.InstallLocation 'AppxManifest.xml'))) {
+    [xml]$xml = Get-Content (Join-Path $pkg.InstallLocation 'AppxManifest.xml')
+    $logoRel = $xml.Package.Properties.Logo
+    if (-not $logoRel) {
+      $logoRel = $xml.Package.Applications.Application.VisualElements.Square150x150Logo | Select-Object -First 1
+    }
+    if ($logoRel) {
+      $candidate = Join-Path $pkg.InstallLocation $logoRel
+      if (-not (Test-Path $candidate)) {
+        $dir = Split-Path $candidate -Parent
+        $stem = [System.IO.Path]::GetFileNameWithoutExtension($candidate)
+        $ext = [System.IO.Path]::GetExtension($candidate)
+        $found = Get-ChildItem -Path $dir -Filter "$stem*$ext" | Select-Object -First 1
+        if ($found) { $candidate = $found.FullName }
+      }
+      if (Save-AssociatedIcon $candidate) { exit 0 }
+    }
+  }
+}
+
+$arpLeaf = $null
+if ($pkgId -like 'ARP\*') {
+  $arpLeaf = ($pkgId -split '\\')[-1]
+}
+$regRoots = @(
+  'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+  'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
+  'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
+)
+foreach ($item in Get-ItemProperty $regRoots) {
+  $matched = ($arpLeaf -and $item.PSChildName -eq $arpLeaf) -or ($pkgName -and $item.DisplayName -eq $pkgName)
+  if (-not $matched) { continue }
+  if ($item.DisplayIcon -and (Save-AssociatedIcon $item.DisplayIcon)) { exit 0 }
+  if ($item.InstallLocation -and (Test-Path $item.InstallLocation)) {
+    $exe = Get-ChildItem -Path $item.InstallLocation -Filter '*.exe' -File | Select-Object -First 1
+    if ($exe -and (Save-AssociatedIcon $exe.FullName)) { exit 0 }
+  }
+}
+exit 1
+"#;
+
+    let mut cmd = Command::new("powershell.exe");
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command", ps_script])
+        .env("APPHUB_ICON_OUT_PATH", temp_png.to_string_lossy().as_ref())
+        .env("APPHUB_PKG_ID", package_id)
+        .env("APPHUB_PKG_NAME", package_name.unwrap_or(""))
+        .kill_on_drop(true)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW);
+
+    let child = cmd.spawn().ok()?;
+    let output = tokio::time::timeout(Duration::from_secs(4), child.wait_with_output())
+        .await
+        .ok()?
+        .ok()?;
+    let bytes = fs::read(&temp_png).ok();
+    let _ = fs::remove_file(&temp_png);
+    if !output.status.success() {
+        return None;
+    }
+    let data = bytes?;
+    let label = format!("local://windows/{}", package_id);
+    Some((data, label))
+}
+
+#[cfg(not(windows))]
+async fn extract_windows_local_app_icon(
+    _package_id: &str,
+    _package_name: Option<&str>,
+) -> Option<(Vec<u8>, String)> {
+    None
+}
+
+#[allow(clippy::too_many_arguments)]
 pub async fn resolve_and_cache_icon_impl(
     db: &DatabaseManager,
     cache_dir: &Path,
@@ -441,6 +852,10 @@ pub async fn resolve_and_cache_icon_impl(
     source_type: &str,
     candidate_urls: &[String],
     force_refresh: bool,
+    homepage: Option<&str>,
+    publisher_url: Option<&str>,
+    package_name: Option<&str>,
+    is_external: Option<bool>,
 ) -> Result<IconResolveResponse, AppHubError> {
     let src_norm = source
         .map(str::trim)
@@ -453,6 +868,7 @@ pub async fn resolve_and_cache_icon_impl(
     if !force_refresh {
         if let Ok(Some(cached)) = db.get_cached_icon(&cache_key) {
             if cached.expires_at > now {
+                let tried: Vec<String> = cached.resolved_url.clone().into_iter().collect();
                 if cached.verified {
                     if let (Some(ref path_str), Some(ref mime)) =
                         (&cached.local_path, &cached.mime_type)
@@ -478,6 +894,8 @@ pub async fn resolve_and_cache_icon_impl(
                                     expires_at: cached.expires_at,
                                     verified: true,
                                     from_cache: true,
+                                    candidates_tried: tried,
+                                    http_status: None,
                                 });
                             }
                         }
@@ -500,79 +918,194 @@ pub async fn resolve_and_cache_icon_impl(
                         expires_at: cached.expires_at,
                         verified: false,
                         from_cache: true,
+                        candidates_tried: tried,
+                        http_status: None,
                     });
                 }
             }
         }
     }
 
-    let mut last_error = "No valid candidate icon URLs provided".to_string();
+    let mut last_error = "No verified icon found across candidate URLs or package discovery".to_string();
     let mut attempted_url: Option<String> = None;
+    let mut candidates_tried: Vec<String> = Vec::new();
+    let mut last_http_status: Option<u16> = None;
 
-    for candidate in candidate_urls {
-        let trimmed = candidate.trim();
-        if trimmed.is_empty() {
-            continue;
+    // Build prioritized (url, effective_source_type) list: caller candidates first
+    let mut queue: Vec<(String, String)> = Vec::new();
+    for c in candidate_urls {
+        let trimmed = c.trim();
+        if !trimmed.is_empty() && !queue.iter().any(|(u, _)| u == trimmed) {
+            queue.push((trimmed.to_string(), source_type.to_string()));
         }
-        attempted_url = Some(trimmed.to_string());
-        match download_remote_icon_bytes(trimmed).await {
-            Ok((bytes, ct)) => match validate_image_payload(&bytes, ct.as_deref()) {
-                Ok(meta) => {
-                    let hash = sha256_hex(&bytes);
-                    let _ = fs::create_dir_all(cache_dir);
-                    let file_path = cache_dir.join(format!("{}.{}", hash, meta.ext));
-                    if let Err(e) = fs::write(&file_path, &bytes) {
-                        last_error = format!("Failed to persist cached icon file: {}", e);
-                        continue;
-                    }
-                    let local_path_str = file_path.to_string_lossy().to_string();
-                    let expires_at = now + VERIFIED_TTL_MS;
-                    let rec = IconCacheRecord {
-                        cache_key: cache_key.clone(),
-                        package_id: package_id.to_string(),
-                        source: src_norm.clone(),
-                        source_type: source_type.to_string(),
-                        resolved_url: Some(trimmed.to_string()),
-                        local_path: Some(local_path_str),
-                        mime_type: Some(meta.mime_type.clone()),
-                        sha256: Some(hash.clone()),
-                        width: meta.width,
-                        height: meta.height,
-                        status: "verified".to_string(),
-                        error_message: None,
-                        fetched_at: now,
-                        expires_at,
-                        verified: true,
-                    };
-                    let _ = db.upsert_cached_icon(&rec);
+    }
 
-                    let data_uri =
-                        format!("data:{};base64,{}", meta.mime_type, base64_encode(&bytes));
-                    return Ok(IconResolveResponse {
-                        cache_key,
-                        package_id: package_id.to_string(),
-                        source: src_norm,
-                        source_type: source_type.to_string(),
-                        resolved_url: Some(trimmed.to_string()),
-                        data_uri: Some(data_uri),
-                        mime_type: Some(meta.mime_type),
-                        sha256: Some(hash),
-                        width: meta.width,
-                        height: meta.height,
-                        status: "verified".to_string(),
-                        error_message: None,
-                        fetched_at: now,
-                        expires_at,
-                        verified: true,
-                        from_cache: false,
-                    });
+    // Dynamic discovery when no explicit candidate was provided (or as ordered discovery)
+    let is_ext = is_external.unwrap_or(false)
+        || src_norm.eq_ignore_ascii_case("external")
+        || package_id.starts_with("ARP\\")
+        || package_id.starts_with("MSIX\\");
+
+    if !is_ext {
+        if src_norm.eq_ignore_ascii_case("msstore") || is_msstore_product_id(package_id) {
+            for u in discover_msstore_icons(package_id).await {
+                if !queue.iter().any(|(ex, _)| ex == &u) {
+                    queue.push((u, "official-cdn".to_string()));
                 }
-                Err(err_msg) => {
-                    last_error = err_msg;
+            }
+        }
+
+        if queue.is_empty() {
+            for u in discover_winget_pkgs_yaml_icons(package_id).await {
+                if !queue.iter().any(|(ex, _)| ex == &u) {
+                    queue.push((u, "package-manifest".to_string()));
                 }
-            },
-            Err(err_msg) => {
+            }
+        }
+
+        if queue.is_empty() {
+            for page in [homepage, publisher_url].into_iter().flatten() {
+                let p = page.trim();
+                if p.starts_with("https://") || p.starts_with("http://") {
+                    if let Some(html) = fetch_text_payload(p, 4).await {
+                        for u in extract_html_icon_urls(&html, p) {
+                            if !queue.iter().any(|(ex, _)| ex == &u) {
+                                queue.push((u, "official-cdn".to_string()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for (trimmed, effective_src_type) in &queue {
+        attempted_url = Some(trimmed.clone());
+        candidates_tried.push(trimmed.clone());
+        match download_remote_icon_bytes(trimmed).await {
+            Ok((bytes, ct, status_code)) => {
+                last_http_status = status_code;
+                match validate_image_payload(&bytes, ct.as_deref()) {
+                    Ok(meta) => {
+                        let hash = sha256_hex(&bytes);
+                        let _ = fs::create_dir_all(cache_dir);
+                        let file_path = cache_dir.join(format!("{}.{}", hash, meta.ext));
+                        if let Err(e) = fs::write(&file_path, &bytes) {
+                            last_error = format!("Failed to persist cached icon file: {}", e);
+                            continue;
+                        }
+                        let local_path_str = file_path.to_string_lossy().to_string();
+                        let expires_at = now + VERIFIED_TTL_MS;
+                        let rec = IconCacheRecord {
+                            cache_key: cache_key.clone(),
+                            package_id: package_id.to_string(),
+                            source: src_norm.clone(),
+                            source_type: effective_src_type.clone(),
+                            resolved_url: Some(trimmed.clone()),
+                            local_path: Some(local_path_str),
+                            mime_type: Some(meta.mime_type.clone()),
+                            sha256: Some(hash.clone()),
+                            width: meta.width,
+                            height: meta.height,
+                            status: "verified".to_string(),
+                            error_message: None,
+                            fetched_at: now,
+                            expires_at,
+                            verified: true,
+                        };
+                        let _ = db.upsert_cached_icon(&rec);
+
+                        let data_uri =
+                            format!("data:{};base64,{}", meta.mime_type, base64_encode(&bytes));
+                        return Ok(IconResolveResponse {
+                            cache_key,
+                            package_id: package_id.to_string(),
+                            source: src_norm,
+                            source_type: effective_src_type.clone(),
+                            resolved_url: Some(trimmed.clone()),
+                            data_uri: Some(data_uri),
+                            mime_type: Some(meta.mime_type),
+                            sha256: Some(hash),
+                            width: meta.width,
+                            height: meta.height,
+                            status: "verified".to_string(),
+                            error_message: None,
+                            fetched_at: now,
+                            expires_at,
+                            verified: true,
+                            from_cache: false,
+                            candidates_tried,
+                            http_status: status_code,
+                        });
+                    }
+                    Err(err_msg) => {
+                        last_error = err_msg;
+                    }
+                }
+            }
+            Err((err_msg, status_code)) => {
+                if status_code.is_some() {
+                    last_http_status = status_code;
+                }
                 last_error = err_msg;
+            }
+        }
+    }
+
+    // Fallback for local Windows ARP/MSIX or installed applications: extract DisplayIcon / Appx logo locally
+    if let Some((local_bytes, local_label)) =
+        extract_windows_local_app_icon(package_id, package_name).await
+    {
+        candidates_tried.push(local_label.clone());
+        attempted_url = Some(local_label.clone());
+        if let Ok(meta) = validate_image_payload(&local_bytes, None) {
+            let hash = sha256_hex(&local_bytes);
+            let _ = fs::create_dir_all(cache_dir);
+            let file_path = cache_dir.join(format!("{}.{}", hash, meta.ext));
+            if fs::write(&file_path, &local_bytes).is_ok() {
+                let local_path_str = file_path.to_string_lossy().to_string();
+                let expires_at = now + VERIFIED_TTL_MS;
+                let rec = IconCacheRecord {
+                    cache_key: cache_key.clone(),
+                    package_id: package_id.to_string(),
+                    source: src_norm.clone(),
+                    source_type: "local-executable".to_string(),
+                    resolved_url: Some(local_label.clone()),
+                    local_path: Some(local_path_str),
+                    mime_type: Some(meta.mime_type.clone()),
+                    sha256: Some(hash.clone()),
+                    width: meta.width,
+                    height: meta.height,
+                    status: "verified".to_string(),
+                    error_message: None,
+                    fetched_at: now,
+                    expires_at,
+                    verified: true,
+                };
+                let _ = db.upsert_cached_icon(&rec);
+
+                let data_uri =
+                    format!("data:{};base64,{}", meta.mime_type, base64_encode(&local_bytes));
+                return Ok(IconResolveResponse {
+                    cache_key,
+                    package_id: package_id.to_string(),
+                    source: src_norm,
+                    source_type: "local-executable".to_string(),
+                    resolved_url: Some(local_label),
+                    data_uri: Some(data_uri),
+                    mime_type: Some(meta.mime_type),
+                    sha256: Some(hash),
+                    width: meta.width,
+                    height: meta.height,
+                    status: "verified".to_string(),
+                    error_message: None,
+                    fetched_at: now,
+                    expires_at,
+                    verified: true,
+                    from_cache: false,
+                    candidates_tried,
+                    http_status: None,
+                });
             }
         }
     }
@@ -615,6 +1148,8 @@ pub async fn resolve_and_cache_icon_impl(
         expires_at,
         verified: false,
         from_cache: false,
+        candidates_tried,
+        http_status: last_http_status,
     })
 }
 
@@ -625,10 +1160,43 @@ mod tests {
     #[test]
     fn test_safe_icon_url_rejects_unreliable_paths_and_portals() {
         assert!(is_safe_icon_url("https://code.visualstudio.com/assets/images/code-stable.png").is_ok());
+        assert!(is_safe_icon_url("https://store-images.s-microsoft.com/image/apps.123.png").is_ok());
         assert!(is_safe_icon_url("https://raw.githubusercontent.com/microsoft/winget-pkgs/master/manifests/foo.png").is_err());
         assert!(is_safe_icon_url("https://www.microsoft.com/favicon.ico").is_err());
         assert!(is_safe_icon_url("javascript:alert(1)").is_err());
         assert!(is_safe_icon_url("https://example.com/bad url.png").is_err());
+    }
+
+    #[test]
+    fn test_display_catalog_yaml_and_html_discovery_parsers() {
+        assert!(is_msstore_product_id("9WZDNCRFJ3TJ"));
+        assert!(is_msstore_product_id("XP89DCGQ3K6VLD"));
+        assert!(!is_msstore_product_id("Mozilla.Firefox"));
+
+        let catalog_json = r#"{
+            "Products": [{
+                "LocalizedProperties": [{
+                    "Images": [
+                        {"ImagePurpose": "Screenshot", "Uri": "//store-images.s-microsoft.com/image/screen.png"},
+                        {"ImagePurpose": "Logo", "Uri": "//store-images.s-microsoft.com/image/apps.logo.png"},
+                        {"ImagePurpose": "Tile", "Uri": "https://store-images.s-microsoft.com/image/apps.tile.png"}
+                    ]
+                }]
+            }]
+        }"#;
+        let urls = parse_display_catalog_icon_urls(catalog_json);
+        assert_eq!(urls.len(), 2);
+        assert_eq!(urls[0], "https://store-images.s-microsoft.com/image/apps.logo.png");
+        assert_eq!(urls[1], "https://store-images.s-microsoft.com/image/apps.tile.png");
+
+        let yaml = "PackageIdentifier: AdGuard.AdGuard\nIcons:\n  - IconUrl: https://cdn.adtidy.org/public/Adguard/Common/adguard_icon.png\n";
+        let yaml_urls = parse_yaml_icon_urls(yaml);
+        assert_eq!(yaml_urls, vec!["https://cdn.adtidy.org/public/Adguard/Common/adguard_icon.png"]);
+
+        let html = r#"<html><head><link rel="icon" href="/favicon-32.png"><link rel="apple-touch-icon" href="/assets/apple-touch.png"></head></html>"#;
+        let html_urls = extract_html_icon_urls(html, "https://www.audacityteam.org/download/");
+        assert_eq!(html_urls[0], "https://www.audacityteam.org/assets/apple-touch.png");
+        assert_eq!(html_urls[1], "https://www.audacityteam.org/favicon-32.png");
     }
 
     #[test]

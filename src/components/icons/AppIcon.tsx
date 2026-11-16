@@ -1,6 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Package } from '../../types';
-import { ResolvedIcon, resolveAppIcon, resolveAppIconAsync } from '../../services/icons';
+import {
+  ResolvedIcon,
+  resolveAppIcon,
+  resolveAppIconAsync,
+  subscribeIconCacheChanges,
+} from '../../services/icons';
 import { IconLoadingState } from './IconLoadingState';
 import { IconErrorState } from './IconErrorState';
 
@@ -10,6 +15,7 @@ export interface AppIconProps {
   pkg: Package;
   size?: AppIconSize;
   className?: string;
+  refreshKey?: number;
 }
 
 const SIZE_SPECS: Record<AppIconSize, { container: string; img: string }> = {
@@ -23,11 +29,20 @@ export const AppIcon: React.FC<AppIconProps> = ({
   pkg,
   size = 'md',
   className = '',
+  refreshKey = 0,
 }) => {
   const spec = SIZE_SPECS[size];
+  const [cacheVersion, setCacheVersion] = useState(0);
+
+  useEffect(() => {
+    return subscribeIconCacheChanges(() => {
+      setCacheVersion(v => v + 1);
+    });
+  }, []);
+
   const syncResolved = React.useMemo(
     () => resolveAppIcon(pkg),
-    [pkg.id, pkg.source, pkg.icon, pkg.name, pkg.category]
+    [pkg.id, pkg.source, pkg.icon, pkg.name, pkg.category, cacheVersion, refreshKey]
   );
 
   const [resolved, setResolved] = useState<ResolvedIcon>(syncResolved);
@@ -42,15 +57,18 @@ export const AppIcon: React.FC<AppIconProps> = ({
     setResolved(immediate);
     setUseFallback(false);
     setRenderFailed(false);
-    setImgLoaded(immediate.src.startsWith('data:') && immediate.diagnostic.validationStatus !== 'pending');
+    setImgLoaded(
+      immediate.src.startsWith('data:') && immediate.diagnostic.validationStatus !== 'pending'
+    );
 
-    // Only fetch/verify asynchronously if not already verified or bundled SVG
-    if (immediate.verified) {
+    const forceRefresh = refreshKey > 0;
+    // Only fetch/verify asynchronously if not already verified/bundled SVG, unless explicitly forced
+    if (immediate.verified && !forceRefresh) {
       return;
     }
 
     const controller = new AbortController();
-    resolveAppIconAsync(pkg, { signal: controller.signal })
+    resolveAppIconAsync(pkg, { signal: controller.signal, forceRefresh })
       .then(asyncResolved => {
         if (controller.signal.aborted || requestSeqRef.current !== seq) return;
         setResolved(asyncResolved);
@@ -69,7 +87,7 @@ export const AppIcon: React.FC<AppIconProps> = ({
     return () => {
       controller.abort();
     };
-  }, [pkg.id, pkg.source, pkg.icon, pkg.name, pkg.category]);
+  }, [pkg.id, pkg.source, pkg.icon, pkg.name, pkg.category, pkg.homepage, pkg.isExternal, refreshKey, cacheVersion]);
 
   const activeSrc =
     useFallback && resolved.fallbackSrc ? resolved.fallbackSrc : resolved.src;

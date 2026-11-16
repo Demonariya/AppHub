@@ -46,6 +46,7 @@ export const LiveTerminalDrawer: React.FC<LiveTerminalDrawerProps> = ({
   const [selectedTaskId, setSelectedTaskId] = useState<string>('');
   const [autoScroll, setAutoScroll] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const userPinnedTaskRef = useRef(false);
 
   const runningList = useMemo(() => {
     if (activeTasks && activeTasks.length > 0) return activeTasks;
@@ -61,10 +62,19 @@ export const LiveTerminalDrawer: React.FC<LiveTerminalDrawerProps> = ({
   }, [runningList, queue, historyTasks]);
 
   useEffect(() => {
+    if (!isOpen) {
+      userPinnedTaskRef.current = false;
+    }
+  }, [isOpen]);
+
+  useEffect(() => {
     if (inspectedTaskId) {
+      userPinnedTaskRef.current = true;
       setSelectedTaskId(inspectedTaskId);
       setAutoScroll(true);
-    } else if (runningList.length > 0) {
+      return;
+    }
+    if (runningList.length > 0 && !userPinnedTaskRef.current) {
       setSelectedTaskId(prev =>
         prev && runningList.some(t => t.id === prev) ? prev : runningList[0].id
       );
@@ -167,6 +177,7 @@ export const LiveTerminalDrawer: React.FC<LiveTerminalDrawerProps> = ({
           <select
             value={displayedTask?.id || ''}
             onChange={e => {
+              userPinnedTaskRef.current = true;
               setSelectedTaskId(e.target.value);
               setAutoScroll(true);
             }}
@@ -259,6 +270,7 @@ export const LiveTerminalDrawer: React.FC<LiveTerminalDrawerProps> = ({
                 key={t.id}
                 type="button"
                 onClick={() => {
+                  userPinnedTaskRef.current = true;
                   setSelectedTaskId(t.id);
                   setAutoScroll(true);
                 }}

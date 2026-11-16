@@ -92,27 +92,28 @@ export const HomePage: React.FC<HomePageProps> = ({
     [packages]
   );
 
+  const catalogPackages = useMemo(() => packages.filter(p => !p.isExternal), [packages]);
+
   // Dynamically pick spotlight from real synced catalog (preferring verified non-external enriched packages)
   const featured = useMemo(() => {
-    const candidates = packages.filter(p => !p.isExternal);
     return (
-      candidates.find(p => p.verified && Boolean(p.description) && p.metadataStatus === 'enriched') ||
-      candidates.find(p => p.verified && Boolean(p.description)) ||
-      candidates.find(p => p.verified) ||
-      candidates[0]
+      catalogPackages.find(p => p.verified && Boolean(p.description) && p.metadataStatus === 'enriched') ||
+      catalogPackages.find(p => p.verified && Boolean(p.description)) ||
+      catalogPackages.find(p => p.verified) ||
+      catalogPackages[0]
     );
-  }, [packages]);
+  }, [catalogPackages]);
 
   const dynamicCategories = useMemo(() => {
     const counts = new Map<CategoryType, number>();
-    for (const p of packages) {
+    for (const p of catalogPackages) {
       if (p.category === 'Uncategorized') continue;
       counts.set(p.category, (counts.get(p.category) || 0) + 1);
     }
     return Array.from(counts.entries())
       .sort((a, b) => b[1] - a[1])
       .slice(0, 6);
-  }, [packages]);
+  }, [catalogPackages]);
 
   const recentlyViewed = useMemo(() => {
     const ids = storage.getRecentlyViewedIds();
@@ -120,7 +121,11 @@ export const HomePage: React.FC<HomePageProps> = ({
     const byId = new Map<string, Package>();
     for (const p of packages) {
       const k = p.id.toLowerCase();
-      if (!byId.has(k)) byId.set(k, p);
+      if (!byId.has(k) || !p.isExternal) {
+        if (!byId.has(k) || byId.get(k)?.isExternal) {
+          byId.set(k, p);
+        }
+      }
     }
     return ids
       .map(id => byId.get(id.toLowerCase()))
@@ -128,47 +133,43 @@ export const HomePage: React.FC<HomePageProps> = ({
       .slice(0, 4);
   }, [packages]);
 
+  const featuredKey = featured ? featured.packageKey || `${featured.source}::${featured.id}` : '';
+
   const devTools = useMemo(
     () =>
-      packages
+      catalogPackages
         .filter(
           p =>
             p.category === 'Development' &&
-            (p.packageKey || `${p.source}::${p.id}`) !==
-              (featured ? featured.packageKey || `${featured.source}::${featured.id}` : '')
+            (p.packageKey || `${p.source}::${p.id}`) !== featuredKey
         )
         .slice(0, 4),
-    [packages, featured]
+    [catalogPackages, featuredKey]
   );
 
   const recentlyPublished = useMemo(
     () =>
-      [...packages]
+      [...catalogPackages]
         .filter(p => Boolean(p.releaseDate))
         .sort((a, b) => (b.releaseDate || '').localeCompare(a.releaseDate || ''))
         .slice(0, 4),
-    [packages]
+    [catalogPackages]
   );
 
   const syncedCatalogPreview = useMemo(
     () =>
-      packages
-        .filter(
-          p =>
-            !p.isExternal &&
-            (p.packageKey || `${p.source}::${p.id}`) !==
-              (featured ? featured.packageKey || `${featured.source}::${featured.id}` : '')
-        )
+      catalogPackages
+        .filter(p => (p.packageKey || `${p.source}::${p.id}`) !== featuredKey)
         .slice(0, 8),
-    [packages, featured]
+    [catalogPackages, featuredKey]
   );
 
   const utilitiesAndSecurity = useMemo(
     () =>
-      packages
+      catalogPackages
         .filter(p => p.category === 'Utilities' || p.category === 'Security')
         .slice(0, 4),
-    [packages]
+    [catalogPackages]
   );
 
   const installed = useMemo(() => packages.filter(p => p.isInstalled).slice(0, 4), [packages]);
@@ -401,7 +402,12 @@ export const HomePage: React.FC<HomePageProps> = ({
 
                 <div className="hidden lg:flex items-center gap-1.5 text-xs font-mono text-[var(--text-muted)] pl-2">
                   <Terminal className="w-3.5 h-3.5" />
-                  <span>winget install --id {featured.id}</span>
+                  <span>
+                    winget install --id {featured.id}
+                    {featured.source && featured.source !== 'external' && featured.source !== 'custom'
+                      ? ` --source ${featured.source}`
+                      : ''}
+                  </span>
                 </div>
               </div>
             </div>
@@ -557,7 +563,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                 onClick={onNavigateToDiscover}
                 className="text-xs text-[var(--text-secondary)] hover:text-[var(--accent-primary)] inline-flex items-center gap-1 transition-colors cursor-pointer"
               >
-                <span>View all {packages.length} packages</span>
+                <span>View all {catalogPackages.length} packages</span>
                 <ChevronRight className="w-3.5 h-3.5" />
               </button>
             }

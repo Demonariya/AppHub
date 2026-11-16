@@ -248,12 +248,26 @@ class WinGetEngineService {
     return msstore.test(id) && /\d/.test(id);
   }
 
+  private normalizeCliSource(source?: string): string | null {
+    const trimmed = (source || '').trim();
+    if (
+      !trimmed ||
+      trimmed === 'external' ||
+      trimmed === 'custom' ||
+      trimmed === 'all'
+    ) {
+      return null;
+    }
+    return trimmed;
+  }
+
   public buildInstallArgs(
     packageId: string,
     options: {
       silent?: boolean;
       force?: boolean;
       version?: string;
+      source?: string;
       architecture?: Architecture;
       customLocation?: string;
       acceptPackageAgreements?: boolean;
@@ -261,6 +275,10 @@ class WinGetEngineService {
     } = {}
   ): string[] {
     const args = ['install', '--id', packageId, '--exact'];
+    const cliSource = this.normalizeCliSource(options.source);
+    if (cliSource) {
+      args.push('--source', cliSource);
+    }
     if (options.version) {
       args.push('--version', options.version);
     }
@@ -285,13 +303,26 @@ class WinGetEngineService {
     return args;
   }
 
-  public buildUninstallArgs(packageId: string, silent = true): string[] {
+  public buildUninstallArgs(
+    packageId: string,
+    silent = true,
+    source?: string
+  ): string[] {
     const args = ['uninstall', '--id', packageId, '--exact'];
+    const cliSource = this.normalizeCliSource(source);
+    if (cliSource) {
+      args.push('--source', cliSource);
+    }
     if (silent) args.push('--silent');
     return args;
   }
 
-  public buildUpgradeArgs(packageId?: string, silent = true, acceptAgreements = true): string[] {
+  public buildUpgradeArgs(
+    packageId?: string,
+    silent = true,
+    acceptAgreements = true,
+    source?: string
+  ): string[] {
     if (!packageId) {
       const args = ['upgrade', '--all'];
       if (silent) args.push('--silent');
@@ -299,6 +330,10 @@ class WinGetEngineService {
       return args;
     }
     const args = ['upgrade', '--id', packageId, '--exact'];
+    const cliSource = this.normalizeCliSource(source);
+    if (cliSource) {
+      args.push('--source', cliSource);
+    }
     if (silent) args.push('--silent');
     if (acceptAgreements) args.push('--accept-package-agreements', '--accept-source-agreements');
     return args;
@@ -681,15 +716,22 @@ class WinGetEngineService {
       onLog(entry);
     };
 
+    const effectiveSource = this.normalizeCliSource(task.source || pkg.source);
     const args =
       task.action === 'uninstall'
-        ? this.buildUninstallArgs(task.packageId, task.flags.silent)
+        ? this.buildUninstallArgs(task.packageId, task.flags.silent, effectiveSource || undefined)
         : task.action === 'update'
-        ? this.buildUpgradeArgs(task.packageId, task.flags.silent, task.flags.acceptPackageAgreements)
+        ? this.buildUpgradeArgs(
+            task.packageId,
+            task.flags.silent,
+            task.flags.acceptPackageAgreements,
+            effectiveSource || undefined
+          )
         : this.buildInstallArgs(task.packageId, {
             silent: task.flags.silent,
             force: task.flags.force,
             version: task.targetVersion && task.targetVersion !== pkg.latestVersion ? task.targetVersion : undefined,
+            source: effectiveSource || undefined,
             architecture: task.flags.architecture,
             customLocation: task.flags.customLocation,
             acceptPackageAgreements: task.flags.acceptPackageAgreements,
@@ -783,6 +825,7 @@ class WinGetEngineService {
         if (task.action === 'uninstall') {
           result = await invokeCommand('winget_uninstall', {
             packageId: task.packageId,
+            source: effectiveSource,
             silent: task.flags.silent,
             taskId: task.id,
             wingetPath,
@@ -790,6 +833,7 @@ class WinGetEngineService {
         } else if (task.action === 'update') {
           result = await invokeCommand('winget_upgrade', {
             packageId: task.packageId,
+            source: effectiveSource,
             silent: task.flags.silent,
             acceptAgreements: task.flags.acceptPackageAgreements,
             taskId: task.id,
@@ -798,6 +842,7 @@ class WinGetEngineService {
         } else {
           result = await invokeCommand('winget_install', {
             packageId: task.packageId,
+            source: effectiveSource,
             silent: task.flags.silent,
             force: task.flags.force,
             version: task.targetVersion || null,
@@ -944,6 +989,7 @@ class WinGetEngineService {
         const wingetPath = storage.getSettings().wingetPath || null;
         const versions = await invokeCommand<string[]>('winget_show_versions', {
           packageId: pkg.id,
+          source: this.normalizeCliSource(pkg.source),
           wingetPath,
         });
         if (versions && versions.length > 0) {

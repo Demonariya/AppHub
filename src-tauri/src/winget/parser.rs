@@ -12,18 +12,78 @@ pub struct SearchInspection {
     pub error_message: Option<String>,
 }
 
+/// Strips ANSI CSI (`\x1b[...`), OSC (`\x1b]...(\x07|\x1b\\)`), and two-byte escape sequences from WinGet output.
+pub fn strip_ansi_codes(input: &str) -> String {
+    if !input.contains('\x1b') && !input.contains('\0') {
+        return input.to_string();
+    }
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\0' {
+            continue;
+        }
+        if c == '\x1b' {
+            match chars.peek().copied() {
+                Some('[') => {
+                    chars.next();
+                    for nc in chars.by_ref() {
+                        if ('\x40'..='\x7e').contains(&nc) {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    chars.next();
+                    while let Some(nc) = chars.next() {
+                        if nc == '\x07' {
+                            break;
+                        }
+                        if nc == '\x1b' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                Some(nc) if ('\x40'..='\x5f').contains(&nc) => {
+                    chars.next();
+                }
+                _ => {}
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
+fn is_braille_or_spinner_only(s: &str) -> bool {
+    let t = s.trim();
+    if t.is_empty() {
+        return true;
+    }
+    if matches!(t, "-" | "\\" | "|" | "/") {
+        return true;
+    }
+    if t.starts_with('█') || t.starts_with('▒') || t.starts_with('▓') || t.starts_with('░') {
+        return true;
+    }
+    t.chars()
+        .all(|c| ('\u{2800}'..='\u{28ff}').contains(&c) || c == ' ')
+}
+
 fn normalize_winget_lines(output: &str) -> Vec<String> {
     let mut lines = Vec::new();
     for raw_line in output.lines() {
-        // WinGet writes spinner frames and progress updates separated by \r
-        let segment = raw_line.split('\r').next_back().unwrap_or(raw_line);
+        // WinGet writes spinner frames and ANSI cursor clears separated by \r; take the last non-empty clean segment
+        let segment = raw_line
+            .split('\r')
+            .rev()
+            .map(strip_ansi_codes)
+            .find(|seg| !seg.trim().is_empty())
+            .unwrap_or_default();
         let trimmed = segment.trim_end();
-        if trimmed.trim().is_empty() {
-            continue;
-        }
-        // Skip pure spinner / box progress bar lines
-        let s = trimmed.trim();
-        if s == "-" || s == "\\" || s == "|" || s == "/" || s.starts_with('█') || s.starts_with('▒') {
+        if trimmed.trim().is_empty() || is_braille_or_spinner_only(trimmed) {
             continue;
         }
         lines.push(trimmed.to_string());
@@ -640,8 +700,14 @@ pub fn parse_show_output(output: &str, package_id: &str) -> WinGetShowDetails {
     let mut active_block: Option<String> = None;
 
     for raw_line in output.lines() {
-        let line = raw_line.split('\r').next_back().unwrap_or(raw_line);
-        if line.trim().is_empty() {
+        let cleaned = raw_line
+            .split('\r')
+            .rev()
+            .map(strip_ansi_codes)
+            .find(|seg| !seg.trim().is_empty())
+            .unwrap_or_default();
+        let line = cleaned.as_str();
+        if line.trim().is_empty() || is_braille_or_spinner_only(line) {
             continue;
         }
 
@@ -1094,5 +1160,35 @@ Name            Id               Version\n\
         assert_eq!(single_src.len(), 1);
         assert_eq!(single_src[0].id, "7zip.7zip");
         assert_eq!(single_src[0].source, "winget");
+    }
+
+    #[test]
+    fn test_strip_ansi_and_parse_winget_1_29_output_with_msstore_and_multi_source() {
+        let raw = "\x1b[?25l\r⠋\r\x1b[KName                            Id                              Version   Source\r\n\
+-------------------------------------------------------------------------------------\r\n\
+\x1b[32m7-Zip\x1b[0m                           7zip.7zip                       24.09     winget\r\n\
+AdGuard                         AdGuard.AdGuard                 7.19.0    winget\r\n\
+App Installer                   Microsoft.DesktopAppInstaller   1.29.380  winget\r\n\
+App Installer                   9NBLGGH4NNS1                    Unknown   msstore\r\n\
+\x1b[?25h";
+        let pkgs = parse_search_output(raw);
+        assert_eq!(pkgs.len(), 4);
+        assert_eq!(pkgs[0].id, "7zip.7zip");
+        assert_eq!(pkgs[0].name, "7-Zip");
+        assert_eq!(pkgs[1].id, "AdGuard.AdGuard");
+        assert_eq!(pkgs[2].id, "Microsoft.DesktopAppInstaller");
+        assert_eq!(pkgs[2].version, "1.29.380");
+        assert_eq!(pkgs[3].id, "9NBLGGH4NNS1");
+        assert_eq!(pkgs[3].source, "msstore");
+
+        let ansi_show = "\x1b[?25l\r⠙\r\x1b[K\x1b[1mFound 7-Zip [7zip.7zip]\x1b[0m\r\n\
+Version: 24.09\r\n\
+Publisher: Igor Pavlov\r\n\
+Homepage: https://www.7-zip.org/\r\n";
+        let details = parse_show_output(ansi_show, "7zip.7zip");
+        assert_eq!(details.name, "7-Zip");
+        assert_eq!(details.version, "24.09");
+        assert_eq!(details.publisher.as_deref(), Some("Igor Pavlov"));
+        assert_eq!(details.homepage.as_deref(), Some("https://www.7-zip.org/"));
     }
 }

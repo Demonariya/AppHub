@@ -224,6 +224,59 @@ export const RIPGREP_SVG = toSvgDataUri(`
 </svg>
 `);
 
+export const APP_INSTALLER_SVG = toSvgDataUri(`
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100%" height="100%">
+  <defs>
+    <linearGradient id="winget-g" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0078D4" />
+      <stop offset="100%" stop-color="#005A9E" />
+    </linearGradient>
+  </defs>
+  <rect width="100" height="100" rx="22" fill="#0F172A" />
+  <path d="M50 18L78 33V67L50 82L22 67V33L50 18Z" fill="url(#winget-g)" />
+  <path d="M50 18L78 33L50 48L22 33L50 18Z" fill="#2899F5" />
+  <path d="M50 48V82M50 38L62 49M50 38L38 49" stroke="#FFFFFF" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
+</svg>
+`);
+
+export const ADGUARD_SVG = toSvgDataUri(`
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100%" height="100%">
+  <rect width="100" height="100" rx="22" fill="#0E241C" />
+  <path d="M50 16C65 16 78 21 82 24C81 55 68 77 50 86C32 77 19 55 18 24C22 21 35 16 50 16Z" fill="#68BC71" />
+  <path d="M50 22C39 22 29 25 25 28C26 52 36 70 50 78V22Z" fill="#4BA154" />
+  <path d="M36 50L46 60L66 39" fill="none" stroke="#FFFFFF" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round" />
+</svg>
+`);
+
+export const AUDACITY_SVG = toSvgDataUri(`
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100%" height="100%">
+  <rect width="100" height="100" rx="22" fill="#0E1A35" />
+  <path d="M24 56V46C24 31.6 35.6 20 50 20C64.4 20 76 31.6 76 46V56" fill="none" stroke="#2563EB" stroke-width="8" stroke-linecap="round" />
+  <rect x="17" y="48" width="12" height="26" rx="6" fill="#3B82F6" />
+  <rect x="71" y="48" width="12" height="26" rx="6" fill="#3B82F6" />
+  <polyline points="30,62 38,48 44,68 50,40 56,66 62,48 70,60" fill="none" stroke="#F59E0B" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round" />
+</svg>
+`);
+
+export const NOTEPAD_PP_SVG = toSvgDataUri(`
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100%" height="100%">
+  <rect width="100" height="100" rx="22" fill="#172318" />
+  <rect x="22" y="18" width="52" height="64" rx="8" fill="#8CD790" stroke="#4E9F52" stroke-width="2.5" />
+  <line x1="32" y1="36" x2="64" y2="36" stroke="#1E3A1E" stroke-width="4" stroke-linecap="round" />
+  <line x1="32" y1="48" x2="58" y2="48" stroke="#1E3A1E" stroke-width="4" stroke-linecap="round" />
+  <line x1="32" y1="60" x2="50" y2="60" stroke="#1E3A1E" stroke-width="4" stroke-linecap="round" />
+  <path d="M62 76L78 52L84 56L68 80L59 83L62 76Z" fill="#2563EB" stroke="#FFFFFF" stroke-width="2" stroke-linejoin="round" />
+</svg>
+`);
+
+export const AMD_SOFTWARE_SVG = toSvgDataUri(`
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100%" height="100%">
+  <rect width="100" height="100" rx="22" fill="#141417" />
+  <path d="M24 24H76V76L60 60V40H40L24 24Z" fill="#EF4444" />
+  <path d="M24 56L40 40V60H60L44 76H24V56Z" fill="#FFFFFF" />
+</svg>
+`);
+
 export const LOCAL_OFFICIAL_ASSETS: Record<string, string> = {
   'Microsoft.VisualStudioCode': VSCODE_STABLE_BLUE_SVG,
   'TheBrowserCompany.Arc': ARC_BROWSER_SVG,
@@ -235,4 +288,9 @@ export const LOCAL_OFFICIAL_ASSETS: Record<string, string> = {
   'MarkRussinovich.SysinternalsSuite': SYSINTERNALS_SVG,
   'voidtools.Everything': EVERYTHING_SEARCH_SVG,
   'BurntSushi.ripgrep.MSVC': RIPGREP_SVG,
+  'Microsoft.DesktopAppInstaller': APP_INSTALLER_SVG,
+  'AdGuard.AdGuard': ADGUARD_SVG,
+  'Audacity.Audacity': AUDACITY_SVG,
+  'Notepad++.Notepad++': NOTEPAD_PP_SVG,
+  'AdvancedMicroDevices.AMDSoftware': AMD_SOFTWARE_SVG,
 };

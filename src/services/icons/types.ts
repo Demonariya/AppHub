@@ -1,9 +1,10 @@
 export type IconSourceType =
   | 'official-asset'     // Built-in verified SVG/data-uri directly bundled
   | 'official-cdn'       // Verified official developer CDN/repo
-  | 'package-manifest'   // WinGet package manifest icon if verified
+  | 'package-manifest'   // WinGet package manifest / Store / dynamic discovery icon
   | 'curated-registry'   // Curated authentic asset from verified repository
-  | 'neutral-placeholder'; // AppHub category-aware monogram placeholder
+  | 'local-app'          // Extracted locally from Windows installer/EXE/MSIX manifest
+  | 'neutral-placeholder'; // AppHub neutral geometric symbol placeholder
 
 export interface IconRecord {
   packageId: string;
@@ -41,6 +42,11 @@ export interface IconDiagnosticInfo {
   sourceType: IconSourceType;
   primaryUrl: string;
   fallbackUrl?: string;
+  candidatesTried?: string[];
+  httpStatus?: number;
+  mimeType?: string;
+  width?: number;
+  height?: number;
   cacheHit?: boolean;
   resolvedAt: number;
   verified: boolean;

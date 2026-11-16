@@ -75,9 +75,30 @@ export function getCachedIcon(
   return undefined;
 }
 
+const MAX_LOCALSTORAGE_ICON_DATA_LEN = 2048;
+const cacheListeners = new Set<() => void>();
+
+export function subscribeIconCacheChanges(listener: () => void): () => void {
+  cacheListeners.add(listener);
+  return () => {
+    cacheListeners.delete(listener);
+  };
+}
+
+function notifyIconCacheChanged(): void {
+  for (const listener of cacheListeners) {
+    try {
+      listener();
+    } catch {
+      // ignore listener errors
+    }
+  }
+}
+
 /**
  * Stores a verified icon or short-lived failure record in cache.
  * Never persistently caches neutral placeholders or unverified pending icons.
+ * Never writes large Base64 data URIs to localStorage (native SQLite handles disk persistence).
  */
 export function setCachedIcon(
   packageId: string,
@@ -109,8 +130,15 @@ export function setCachedIcon(
 
   memoryCache.set(key, entry);
 
-  // Persist verified entries (or short-lived failures) to localStorage
-  if (typeof window !== 'undefined' && window.localStorage && icon.verified) {
+  // Persist verified lightweight entries to localStorage (skip oversized Base64 binary payloads)
+  const isOversizedDataUri =
+    icon.src.startsWith('data:') && icon.src.length > MAX_LOCALSTORAGE_ICON_DATA_LEN;
+  if (
+    typeof window !== 'undefined' &&
+    window.localStorage &&
+    icon.verified &&
+    !isOversizedDataUri
+  ) {
     try {
       localStorage.setItem(`${CACHE_STORAGE_KEY_PREFIX}${key}`, JSON.stringify(entry));
     } catch {
@@ -173,6 +201,7 @@ export function invalidateIconCache(packageId?: string, source?: string): void {
       }
     }
   }
+  notifyIconCacheChanged();
 }
 
 export function isIconCached(packageId: string, source?: string): boolean {
